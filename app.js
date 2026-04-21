@@ -30,6 +30,8 @@ const _cache = {
 function invalidate(...keys){
   if(keys.length===0){ Object.keys(_cache).forEach(k=>_cache[k]=null); }
   else keys.forEach(k=>{ _cache[k]=null; });
+  // Refresh in background so next page load gets fresh data
+  if(typeof refreshFromSupabase==='function') refreshFromSupabase(false);
 }
 
 // ─── CAT ICONS (static, no need for DB) ──────────────────────────────────────
@@ -41,51 +43,89 @@ const CAT_ICONS = {
 };
 
 // ─── LOAD CATALOG FROM SUPABASE ──────────────────────────────────────────────
-async function loadCatalog(){
+// ─── LOCAL STORAGE CACHING (Phase 5) ─────────────────────────────────────────
+const LS_KEY = 'cz_appdata_v2';
+const LS_TTL = 10 * 60 * 1000; // 10 minutes
+
+function saveToLocalStorage(data){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify({ts:Date.now(), data:data})); }
+  catch(e){ console.warn('localStorage save failed:', e); }
+}
+
+function loadFromLocalStorage(){
   try{
-    showSpinner('Loading parts catalog...');
-    // Fetch catalog parts and details in parallel
-    const [catRes, detRes] = await Promise.all([
+    const raw = localStorage.getItem(LS_KEY);
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(!parsed||!parsed.ts||!parsed.data) return null;
+    if(Date.now()-parsed.ts > LS_TTL){ localStorage.removeItem(LS_KEY); return null; }
+    return parsed.data;
+  }catch(e){ try{localStorage.removeItem(LS_KEY);}catch(le){} return null; }
+}
+
+function applyAppData(d){
+  if(!d||typeof d!=='object') throw new Error('Invalid cache data');
+  _catalog = (d.catalog||[]).map(function(row){
+    return {id:row.id,name:row.name,cat:row.cat||row.category,sub:row.sub||row.subcategory||'',
+      oem:row.oem||row.oem_number||'',afm:row.afm||row.aftermarket_ref||'',
+      rank:row.rank||row.failure_rank||999,fits:row.fits||'all',desc:row.desc||row.description||''};
+  });
+  _partDetails = d.partDetails||{};
+  _cache.inventory = d.inventory||[];
+  _cache.vehicles  = d.vehicles||[];
+  _cache.wishlist  = d.wishlist||[];
+  dbInventory = _cache.inventory;
+}
+
+async function loadCatalog(){
+  // Try localStorage first for instant startup
+  const cached = loadFromLocalStorage();
+  if(cached && cached.catalog && cached.catalog.length>0){
+    try{
+      showSpinner('Opening the garage...');
+      applyAppData(cached);
+      console.log('Loaded from localStorage instantly');
+      refreshFromSupabase(false); // silent background refresh
+      return;
+    }catch(e){
+      console.warn('Cache corrupt, clearing:', e);
+      try{localStorage.removeItem(LS_KEY);}catch(le){}
+    }
+  }
+  // No cache: full load
+  showSpinner('Waking up the garage...');
+  await refreshFromSupabase(true);
+}
+
+async function refreshFromSupabase(showErrors){
+  try{
+    const [catRes,detRes,invRes,vehRes,wishRes] = await Promise.all([
       db.from('catalog_parts').select('*').order('failure_rank'),
-      db.from('part_details').select('*')
+      db.from('part_details').select('*'),
+      db.from('parts').select('*'),
+      db.from('vehicles').select('*').order('year',{ascending:false}),
+      db.from('wishlist').select('*').order('created_at',{ascending:false})
     ]);
-
-    if(catRes.error) throw new Error('Catalog: ' + catRes.error.message);
-
-    // Normalize catalog_parts rows to match legacy format used throughout the app
-    // (cat, sub, oem, afm, rank, desc instead of Supabase column names)
-    _catalog = (catRes.data || []).map(function(row){
-      return {
-        id:   row.id,
-        name: row.name,
-        cat:  row.category,
-        sub:  row.subcategory || '',
-        oem:  row.oem_number || '',
-        afm:  row.aftermarket_ref || '',
-        rank: row.failure_rank || 999,
-        fits: row.fits || 'all',
-        desc: row.description || ''
-      };
+    if(catRes.error) throw new Error('Catalog: '+catRes.error.message);
+    const catalog = (catRes.data||[]).map(function(row){
+      return {id:row.id,name:row.name,cat:row.category,sub:row.subcategory||'',
+        oem:row.oem_number||'',afm:row.aftermarket_ref||'',
+        rank:row.failure_rank||999,fits:row.fits||'all',desc:row.description||''};
     });
-
-    // Normalize part_details rows to match legacy format (time, tools, hardware, tip)
-    _partDetails = {};
-    (detRes.data || []).forEach(function(row){
-      _partDetails[row.catalog_part_id] = {
-        time:     row.estimated_time || '',
-        tools:    row.tools || [],
-        hardware: row.hardware || [],
-        tip:      row.pro_tip || ''
-      };
+    const partDetails = {};
+    (detRes.data||[]).forEach(function(row){
+      partDetails[row.catalog_part_id]={time:row.estimated_time||'',tools:row.tools||[],hardware:row.hardware||[],tip:row.pro_tip||''};
     });
-
-    console.log('Catalog loaded: ' + _catalog.length + ' parts, ' + Object.keys(_partDetails).length + ' detail records');
-  } catch(e){
-    console.error('Failed to load catalog:', e);
-    // Fall through — app still works, just won't show catalog parts
-    toast('Could not load parts catalog from Supabase. Check connection.', 'error');
+    const freshData = {catalog,partDetails,inventory:invRes.data||[],vehicles:vehRes.data||[],wishlist:wishRes.data||[]};
+    applyAppData(freshData);
+    saveToLocalStorage(freshData);
+    console.log('Refreshed from Supabase: '+catalog.length+' parts');
+  }catch(e){
+    console.error('Supabase refresh failed:', e);
+    if(showErrors) toast('Could not connect to Supabase. Check your internet and try refreshing.','error');
   }
 }
+
 
 // ─── CACHED FETCH HELPERS ────────────────────────────────────────────────────
 async function fetchInventory(force){
@@ -184,7 +224,10 @@ db.auth.onAuthStateChange(async(event,session)=>{
     document.getElementById('app-spinner').style.display='none';
     document.getElementById('auth-screen').style.display='none';
     document.getElementById('app').style.display='flex';
-    await showView('dashboard');
+    var parsed = parseHash(window.location.hash);
+    var lastView = (parsed.view && parsed.view !== 'dashboard') ? parsed.view : 'dashboard';
+    var lastArg = parsed.arg || null;
+    await showView(lastView, lastArg);
   } else {
     currentUser=null;
     document.getElementById('app-spinner').style.display='none';
@@ -255,7 +298,20 @@ async function renderDashboard(){
     totalParts = inv.length;
     const veh = await fetchVehicles();
     totalVehicles = veh.length;
-    _cache.dashboard = {totalParts, totalVehicles, parts, reminders};
+    // Check for vehicles with stale photos (oldest current photo > 1 year)
+    var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
+    var stalePhotoVehicles=[];
+    try{
+      var photoRes=await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
+      var seen={};
+      (photoRes.data||[]).forEach(function(p){
+        if(!seen[p.vehicle_id]&&new Date(p.uploaded_at)<oneYearAgo){
+          seen[p.vehicle_id]=true;
+          stalePhotoVehicles.push(p);
+        }
+      });
+    }catch(e){}
+    _cache.dashboard = {totalParts, totalVehicles, parts, reminders, stalePhotoVehicles};
   }catch(err){el.innerHTML=errBox(err.message);console.error('Dashboard error:',err);return;}
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
@@ -268,7 +324,8 @@ async function renderDashboard(){
     <div class="stat-card"><div class="stat-label">Upcoming Service</div><div class="stat-value" style="color:${upcoming.length>0?'var(--warning)':'var(--success)'}">${upcoming.length}</div><div style="font-size:12px;color:var(--text-muted)">Due within 30 days</div></div>
   </div>
   ${upcoming.length>0?`<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⚠️ Upcoming Maintenance</div>${upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('')}</div>`:''}
-  ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}`;
+  ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
+  ${(_cache.dashboard?.stalePhotoVehicles||[]).length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${(_cache.dashboard.stalePhotoVehicles||[]).map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1361,8 +1418,11 @@ async function renderVehicleProfile(arg){
   }
 
   // Preserve tab from previous render or use default
+  // arg.tab can override the tab (e.g. from dashboard photo reminder click)
   if(_currentVehicleProfile.id !== id){
-    _currentVehicleProfile = {id:id, tab:'overview'};
+    _currentVehicleProfile = {id:id, tab: arg?.tab || 'overview'};
+  } else if(arg?.tab){
+    _currentVehicleProfile.tab = arg.tab;
   }
 
   let v=null, services=[], reminders=[], installs=[], mileLogs=[];
@@ -1514,14 +1574,122 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
 }
 
 // Photos tab - skeleton for Phase 2
-function renderPhotosTab(v){
-  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px" class="no-print">';
-  html += '<div style="color:var(--text-muted);font-size:13px">Upload condition photos with date stamps. Tag as exterior, interior, or damage.</div>';
-  html += '<button class="btn btn-primary btn-sm" onclick="toast(\'Photo upload coming in Phase 2\',\'info\')">+ Upload Photo</button>';
+async function renderPhotosTab(v){
+  var vehicleId = v.id;
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px" class="no-print">';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;color:var(--text-muted)">Condition photos tagged by location. Orange ! means photo is over 1 year old.</div>';
+  html += '<label class="btn btn-primary btn-sm" style="cursor:pointer">+ Upload Photo<input type="file" accept="image/*" style="display:none" onchange="handleVehiclePhotoUpload(\''+vehicleId+'\',this.files[0])"></label>';
   html += '</div>';
-  html += '<div class="empty-state"><div class="empty-icon">📸</div><p>Photo album coming in Phase 2</p><div style="font-size:12px;color:var(--text-dim);margin-top:8px">This tab will show your uploaded photos, tagged by location and condition, with update reminders every year.</div></div>';
+  var photos = [];
+  try{
+    var res = await db.from('vehicle_photos').select('*').eq('vehicle_id', vehicleId).order('uploaded_at', {ascending:false});
+    photos = res.data || [];
+  }catch(e){ photos=[]; }
+  if(photos.length===0){
+    html += '<div class="empty-state"><div class="empty-icon">&#x1F4F8;</div><p>No photos yet</p>';
+    html += '<div style="font-size:12px;color:var(--text-dim);margin-top:8px">Upload exterior, interior, and condition shots. Tap a photo to add tags.</div></div>';
+    return html;
+  }
+  var ORDER = {Exterior:0, Interior:1, 'Engine Bay':2, Damage:3};
+  photos.sort(function(a,b){
+    var ao=ORDER[a.location_tag]!==undefined?ORDER[a.location_tag]:99;
+    var bo=ORDER[b.location_tag]!==undefined?ORDER[b.location_tag]:99;
+    if(ao!==bo) return ao-bo;
+    var ad=a.damage_rating&&a.damage_rating!=='Excellent'?1:0;
+    var bd=b.damage_rating&&b.damage_rating!=='Excellent'?1:0;
+    if(ad!==bd) return ad-bd;
+    return new Date(b.uploaded_at)-new Date(a.uploaded_at);
+  });
+  var current=photos.filter(function(p){return p.is_current;});
+  var historical=photos.filter(function(p){return !p.is_current;});
+  var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
+  function photoCard(p){
+    var needsUpdate=new Date(p.uploaded_at)<oneYearAgo;
+    var tagColor=p.location_tag==='Damage'?'var(--danger)':p.location_tag==='Exterior'?'var(--ku-blue)':'var(--info)';
+    var card='<div style="position:relative;cursor:pointer" onclick="openPhotoDetail(\''+p.id+'\',\''+vehicleId+'\')">'+
+      '<img src="'+p.image_url+'" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--border)">'+
+      '<div style="position:absolute;top:6px;left:6px;display:flex;gap:4px;flex-wrap:wrap">';
+    if(p.location_tag) card+='<span style="background:'+tagColor+';color:#fff;font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 6px;border-radius:3px">'+esc(p.location_tag)+'</span>';
+    if(p.damage_rating&&p.damage_rating!=='Excellent') card+='<span style="background:var(--danger);color:#fff;font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 6px;border-radius:3px">'+esc(p.damage_rating)+'</span>';
+    card+='</div>';
+    if(needsUpdate) card+='<div style="position:absolute;top:6px;right:6px;background:var(--warning);color:#111;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700" title="Over 1 year old">!</div>';
+    card+='<div style="font-size:11px;color:var(--text-muted);margin-top:4px">'+fmtDate(p.uploaded_at)+'</div>';
+    if(p.notes) card+='<div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(p.notes)+'</div>';
+    card+='</div>';
+    return card;
+  }
+  var sections={};
+  current.forEach(function(p){var k=p.location_tag||'Untagged';if(!sections[k])sections[k]=[];sections[k].push(p);});
+  ['Exterior','Interior','Engine Bay','Damage','Untagged'].forEach(function(sec){
+    if(!sections[sec]||sections[sec].length===0) return;
+    html+='<div style="margin-bottom:24px">';
+    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:12px">'+sec+'</div>';
+    html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px">';
+    sections[sec].forEach(function(p){html+=photoCard(p);});
+    html+='</div></div>';
+  });
+  if(historical.length>0){
+    html+='<div style="margin-top:16px">';
+    html+='<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'photo-hist\').style.display===\'none\'?document.getElementById(\'photo-hist\').style.display=\'grid\':document.getElementById(\'photo-hist\').style.display=\'none\'" style="margin-bottom:12px">&#x25BC; Show History ('+historical.length+')</button>';
+    html+='<div id="photo-hist" style="display:none;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;opacity:.6">';
+    historical.forEach(function(p){html+=photoCard(p);});
+    html+='</div></div>';
+  }
   return html;
 }
+
+async function handleVehiclePhotoUpload(vehicleId, file){
+  if(!file) return;
+  toast('Uploading...','info');
+  try{
+    var url=await uploadFile('vehicle-photos',file);
+    await db.from('vehicle_photos').insert({vehicle_id:vehicleId,uploaded_by:currentUser.id,image_url:url,is_current:true,uploaded_at:new Date().toISOString()});
+    toast('Uploaded! Tap the photo to add tags.','success');
+    setVehicleTab('photos');
+  }catch(e){toast('Upload failed: '+e.message,'error');}
+}
+
+async function openPhotoDetail(photoId, vehicleId){
+  var res=await db.from('vehicle_photos').select('*').eq('id',photoId).single();
+  var p=res.data;if(!p) return;
+  var locOpts=['Exterior','Interior','Engine Bay','Damage'].map(function(t){return '<option value="'+t+'"'+(p.location_tag===t?' selected':'')+'>'+t+'</option>';}).join('');
+  var dmgOpts=['Excellent','Good','Fair','Poor','Parts Only'].map(function(d){return '<option value="'+d+'"'+(p.damage_rating===d?' selected':'')+'>'+d+'</option>';}).join('');
+  var hr=p.location_tag?await db.from('vehicle_photos').select('*').eq('vehicle_id',vehicleId).eq('location_tag',p.location_tag).order('uploaded_at',{ascending:false}):null;
+  var history=(hr&&hr.data||[]).filter(function(h){return h.id!==photoId;});
+  showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">'+
+    '<div class="modal-header"><div class="modal-title">Photo Details</div><button class="close-btn" onclick="closeModal()">&times;</button></div>'+
+    '<div class="modal-body">'+
+    '<img src="'+p.image_url+'" style="width:100%;border-radius:8px;margin-bottom:16px;max-height:280px;object-fit:cover">'+
+    '<div class="grid-2">'+
+    '<div class="form-group"><label>Location Tag</label><select class="form-control" id="pd-loc"><option value="">Untagged</option>'+locOpts+'</select></div>'+
+    '<div class="form-group"><label>Damage Rating</label><select class="form-control" id="pd-dmg"><option value="">No damage noted</option>'+dmgOpts+'</select></div>'+
+    '</div>'+
+    '<div class="form-group"><label>Notes</label><input type="text" class="form-control" id="pd-notes" value="'+esc(p.notes||'')+'" placeholder="e.g. Rust on rocker panel"></div>'+
+    (history.length>0?'<div style="margin-top:12px"><div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px">Previous '+esc(p.location_tag||'')+' photos</div>'+
+    '<div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">'+
+    history.slice(0,6).map(function(h){return '<div style="flex-shrink:0"><img src="'+h.image_url+'" style="width:80px;height:60px;object-fit:cover;border-radius:4px;opacity:.7"><div style="font-size:10px;color:var(--text-muted);text-align:center">'+fmtDate(h.uploaded_at)+'</div></div>';}).join('')+
+    '</div></div>':'')+'</div>'+
+    '<div class="modal-footer">'+
+    '<button class="btn btn-danger btn-sm" onclick="deleteVehiclePhoto(\''+photoId+'\',\''+vehicleId+'\')">Delete</button>'+
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>'+
+    '<button class="btn btn-primary" onclick="savePhotoTags(\''+photoId+'\',\''+vehicleId+'\')">Save Tags</button>'+
+    '</div></div></div>');
+}
+
+async function savePhotoTags(photoId, vehicleId){
+  var locTag=val('pd-loc'),dmgRating=val('pd-dmg'),notes=val('pd-notes');
+  if(locTag){await db.from('vehicle_photos').update({is_current:false}).eq('vehicle_id',vehicleId).eq('location_tag',locTag).eq('is_current',true).neq('id',photoId);}
+  var{error}=await db.from('vehicle_photos').update({location_tag:locTag||null,damage_rating:dmgRating||null,notes:notes||null,is_current:true}).eq('id',photoId);
+  if(error){toast(error.message,'error');return;}
+  toast('Tags saved!','success');closeModal();setVehicleTab('photos');
+}
+
+async function deleteVehiclePhoto(photoId, vehicleId){
+  if(!confirm('Delete this photo?'))return;
+  await db.from('vehicle_photos').delete().eq('id',photoId);
+  toast('Deleted','success');closeModal();setVehicleTab('photos');
+}
+
 
 
 async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
