@@ -1,0 +1,19 @@
+# Chicken Zone - Netlify Cache Headers
+# This tells browsers how long to keep each file type cached
+# so the app stays loaded when you switch tabs
+
+# The HTML page itself - don't cache it so you always get the latest deploy
+/index.html
+  Cache-Control: no-cache, no-store, must-revalidate
+
+# JavaScript - cache for 1 year (version number in URL forces refresh when changed)
+/app.js
+  Cache-Control: public, max-age=31536000, immutable
+
+# CSS - cache for 1 year
+/styles.css
+  Cache-Control: public, max-age=31536000, immutable
+
+# All other files
+/*
+  Cache-Control: public, max-age=3600
