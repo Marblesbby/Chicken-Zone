@@ -1250,15 +1250,30 @@ async function saveEditInventory(id){
   const{error}=await db.from('parts').update(data).eq('id',id);
   if(error){toast(error.message,'error');return}
   toast('Updated!','success');closeModal();
-  invalidate('inventory','dashboard');
-  fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
+  // Update in-memory cache without a new Supabase fetch
+  _cache.inventory=null; // will re-fetch on next renderPartsPage
+  _cache.dashboard=null;
+  try{localStorage.removeItem(LS_KEY);}catch(e){} // force fresh load next time
+  dbInventory=await fetchInventory(true);
+  renderPartsList();
 }
 
 async function confirmDeleteInv(id,name){
-  if(!confirm(`Remove "${name}" from inventory?`))return;
-  await db.from('parts').delete().eq('id',id);toast('Removed from inventory','success');closeModal();
-  invalidate('inventory','dashboard');
-  fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
+  if(!confirm('Remove "'+name+'" from inventory?'))return;
+  const{error}=await db.from('parts').delete().eq('id',id);
+  if(error){toast(error.message,'error');return;}
+  // Remove from in-memory cache immediately without hitting Supabase again
+  _cache.inventory=(_cache.inventory||[]).filter(function(p){return p.id!==id;});
+  _cache.dashboard=null;
+  dbInventory=_cache.inventory;
+  // Save updated cache to localStorage right away
+  try{
+    var stored=JSON.parse(localStorage.getItem(LS_KEY)||'{}');
+    if(stored.data){stored.data.inventory=_cache.inventory;stored.ts=Date.now();localStorage.setItem(LS_KEY,JSON.stringify(stored));}
+  }catch(e){}
+  toast('Removed from inventory','success');
+  closeModal();
+  renderPartsList();
 }
 
 function printPartLabel(name,qrUrl,oem,location){
