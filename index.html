@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐔 Chicken Zone</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;600;700&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<!-- INITIAL LOAD SPINNER (shown until catalog loads from Supabase) -->
+<div id="app-spinner" class="spinner-overlay">
+  <div class="egg-spin">🥚</div>
+  <div class="spinner-label">Loading Chicken Zone...</div>
+</div>
+
+<div id="toast-container"></div>
+<button class="hamburger" onclick="toggleSidebar()"><span></span><span></span><span></span></button>
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen" style="display:none">
+  <div class="auth-box">
+    <div class="auth-logo">
+      <div class="brand">🐔 Chicken Zone</div>
+      <div class="sub">Inventory Manager</div>
+    </div>
+    <div class="auth-tabs">
+      <div class="auth-tab active" onclick="switchAuthTab('login')">Sign In</div>
+      <div class="auth-tab" onclick="switchAuthTab('register')">Register</div>
+    </div>
+    <div id="auth-form-login">
+      <div class="form-group">
+        <label>Username or Email</label>
+        <input type="text" class="form-control" id="login-username"
+          placeholder="username or email address"
+          onkeydown="if(event.key==='Enter')signIn()"
+          autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" class="form-control" id="login-password"
+          placeholder="••••••••"
+          onkeydown="if(event.key==='Enter')signIn()"
+          autocomplete="current-password">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="signIn()" type="button">Sign In</button>
+    </div>
+    <div id="auth-form-register" style="display:none">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" class="form-control" id="reg-username" placeholder="pick a username (letters, numbers, underscore)">
+      </div>
+      <div class="form-group">
+        <label>Email (for password reset only)</label>
+        <input type="email" class="form-control" id="reg-email" placeholder="your@email.com">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" class="form-control" id="reg-password"
+          placeholder="Minimum 6 characters"
+          autocomplete="new-password">
+      </div>
+      <button class="btn btn-primary btn-block mt-16" onclick="signUp()" type="button">Create Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app" style="display:none">
+  <div id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-name"><span class="chicken">🐔</span>Chicken Zone</div>
+      <div class="brand-sub">Inventory Manager</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-label">Main</div>
+      <div class="nav-item active" onclick="showView('dashboard')" data-view="dashboard">
+        <span class="nav-icon">📊</span> Dashboard
+      </div>
+      <div class="nav-item" onclick="showView('parts')" data-view="parts">
+        <span class="nav-icon">🔧</span> Auto Parts
+      </div>
+      <div class="nav-item" onclick="showView('vehicles')" data-view="vehicles">
+        <span class="nav-icon">🚗</span> Vehicles
+      </div>
+      <div class="nav-item" onclick="showView('wishlist')" data-view="wishlist">
+        <span class="nav-icon">⭐</span> Wishlist
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-info" id="user-email-display">—</div>
+      <button class="btn btn-secondary btn-block btn-sm" onclick="signOut()">Sign Out</button>
+    </div>
+  </div>
+
+  <div id="main-content">
+    <div id="view-dashboard"></div>
+    <div id="view-parts"          style="display:none"></div>
+    <div id="view-part-profile"   style="display:none"></div>
+    <div id="view-vehicles"       style="display:none"></div>
+    <div id="view-vehicle-profile" style="display:none"></div>
+    <div id="view-wishlist"       style="display:none"></div>
+  </div>
+</div>
+
+<div id="modal-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
