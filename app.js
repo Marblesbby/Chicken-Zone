@@ -214,6 +214,25 @@ function withTimeout(promise, ms=20000){
 }
 function errBox(msg){return`<div style="padding:40px 32px"><div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6"><strong style="font-size:16px;display:block;margin-bottom:8px">⚠️ Could Not Load Data</strong>${msg}<br><br><button class="btn btn-secondary btn-sm" onclick="location.reload()">🔄 Retry</button></div></div>`;}
 
+
+// ─── URL HASH ROUTING ────────────────────────────────────────────────────────
+function buildHash(view, arg){
+  if(!arg) return '#'+view;
+  return '#'+view+'/'+encodeURIComponent(JSON.stringify(arg));
+}
+
+function parseHash(hash){
+  if(!hash||hash==='#') return {view:'dashboard',arg:null};
+  var h=hash.replace(/^#/,'');
+  var slash=h.indexOf('/');
+  if(slash<0) return {view:h,arg:null};
+  var view=h.substring(0,slash);
+  try{var arg=JSON.parse(decodeURIComponent(h.substring(slash+1)));return {view:view,arg:arg};}
+  catch(e){return {view:view,arg:null};}
+}
+
+var _navigating=false;
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 db.auth.onAuthStateChange(async(event,session)=>{
   if(session?.user){
