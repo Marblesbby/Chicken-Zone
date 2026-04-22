@@ -366,19 +366,27 @@ async function renderDashboard(){
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderPartsPage(){
   const el=document.getElementById('view-parts');
+  if(!el){ console.error('view-parts element missing'); return; }
   // Only show loading spinner if we have nothing cached yet
   if(!_cache.inventory) el.innerHTML=viewLoading('Loading parts...');
   try{
-    dbInventory=await fetchInventory();
+    dbInventory = await fetchInventory();
     renderPartsList(el);
-  }catch(err){el.innerHTML=errBox(err.message);console.error('Parts error:',err);}
+  }catch(err){
+    el.innerHTML = errBox(err.message);
+    console.error('renderPartsPage error:', err);
+  }
 }
 
 function renderPartsList(el){
   if(!el) el=document.getElementById('view-parts');
+  try{
+  // Use cache as source of truth - dbInventory may be stale
+  const invSource = _cache.inventory || dbInventory || [];
+  dbInventory = invSource;
   // Build combined list: GMT800 catalog + custom DB parts not in catalog
   const catalogIds=new Set(_catalog.map(p=>p.id));
-  const customParts=dbInventory.filter(p=>!p.catalog_part_id||!catalogIds.has(p.catalog_part_id));
+  const customParts=invSource.filter(p=>!p.catalog_part_id||!catalogIds.has(p.catalog_part_id));
 
   // For each catalog part, find matching inventory
   let combined=_catalog.map(cp=>{
@@ -465,6 +473,10 @@ function renderPartsList(el){
         </tbody>
       </table>
     </div>`;
+  }catch(err){
+    console.error('renderPartsList error:',err);
+    el.innerHTML='<div style="padding:40px;color:var(--danger)">Error rendering parts: '+err.message+'<br><button class="btn btn-secondary btn-sm" onclick="location.reload()" style="margin-top:10px">Reload</button></div>';
+  }
 }
 
 function onPartsSearch(v){partSearch=v;clearTimeout(partsTimer);partsTimer=setTimeout(()=>renderPartsList(),300)}
@@ -1853,7 +1865,7 @@ function renderServiceTab(services, vehicleId){
     var meta=[s.performed_date?fmtDate(s.performed_date):null,s.mileage_at_service?s.mileage_at_service.toLocaleString()+' mi':null,s.performed_by?'by '+esc(s.performed_by):null].filter(Boolean).join(' &middot; ');
     if(meta) html+='<div style="font-size:12px;color:var(--text-muted);margin-top:3px">'+meta+'</div>';
     if(s.description) html+='<div style="margin-top:8px;font-size:13px">'+esc(s.description)+'</div>';
-    html+='</div><button class="btn btn-ghost btn-sm no-print" onclick="deleteServiceRecord('+JSON.stringify(s.id)+')">&#x1F5D1;&#xFE0F;</button></div></div>';
+    html+='</div><button class="btn btn-ghost btn-sm no-print" onclick="deleteServiceRecord(\''+s.id+'\')">&#x1F5D1;&#xFE0F;</button></div></div>';
   });
   return html;
 }
@@ -1895,7 +1907,7 @@ function renderPartsTab(installs, vehicleId){
         if(i.parts) html+='<div style="color:var(--text-muted)">'+esc(i.parts.condition||'-')+'  &middot;  Part #: '+esc(i.parts.part_number||'-')+'</div>';
         if(i.time_taken) html+='<div style="color:var(--text-muted)">Time: '+esc(i.time_taken)+'</div>';
         if(i.notes) html+='<div style="color:var(--text-muted);margin-top:3px">'+esc(i.notes)+'</div>';
-        if(!i.removed_date) html+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm no-print" onclick="event.stopPropagation();showRemovePartModal('+JSON.stringify(i.id)+')">Mark Removed</button></div>';
+        if(!i.removed_date) html+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm no-print" onclick="event.stopPropagation();showRemovePartModal(\''+i.id+'\')">Mark Removed</button></div>';
         html+='</div>';
       });
       html+='</div></div>';
@@ -1948,9 +1960,9 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
     if(meta) html+='<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+meta+'</div>';
     html+='</div>';
     html+='<div class="flex-row no-print" style="flex-wrap:wrap;gap:4px">';
-    html+='<button class="btn btn-secondary btn-sm" onclick="showSnoozeModal('+JSON.stringify(r.id)+','+JSON.stringify(r.title)+')">Snooze</button>';
-    html+='<button class="btn btn-secondary btn-sm" onclick="markReminderDone('+JSON.stringify(r.id)+',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
-    html+='<button class="btn btn-ghost btn-sm" onclick="deleteReminder('+JSON.stringify(r.id)+')">Del</button>';
+    html+='<button class="btn btn-secondary btn-sm" onclick="showSnoozeModal(\''+r.id+'\',\''+esc(r.title).replace(/\'/g,"&#39;")+'\')">Snooze</button>';
+    html+='<button class="btn btn-secondary btn-sm" onclick="markReminderDone(\''+r.id+'\',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
+    html+='<button class="btn btn-ghost btn-sm" onclick="deleteReminder(\''+r.id+'\')">Del</button>';
     html+='</div></div></div>';
   });
   return html;
