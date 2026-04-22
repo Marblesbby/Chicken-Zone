@@ -289,6 +289,13 @@ async function signOut(){await db.auth.signOut()}
 // ─── NAVIGATION ───────────────────────────────────────────────────────────────
 async function showView(view, arg){
   if(window.innerWidth<=768) closeSidebar();
+  // Update URL hash so browser back button works and refresh restores this view
+  var newHash = buildHash(view, arg);
+  if(window.location.hash !== newHash){
+    _navigating = true;
+    window.location.hash = newHash;
+    setTimeout(function(){ _navigating=false; }, 50);
+  }
   // Only highlight nav for top-level views
   const navView = (view==='part-profile')?'parts':(view==='vehicle-profile')?'vehicles':view;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.view===navView));
@@ -302,6 +309,13 @@ async function showView(view, arg){
   else if(view==='vehicle-profile') await renderVehicleProfile(arg);
   else if(view==='wishlist') await renderWishlist();
 }
+
+// Browser back/forward button support
+window.addEventListener('hashchange', async function(){
+  if(_navigating) return;
+  var parsed = parseHash(window.location.hash);
+  await showView(parsed.view, parsed.arg);
+});
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
@@ -465,6 +479,27 @@ async function showPartProfile(id, type){
   await showView('part-profile', {id:id, type:type||'catalog'});
 }
 
+
+// Called from Compatible Vehicles tag click on part profile
+// Finds oldest inventory item of this part and opens install modal for the given vehicle
+async function startInstallForVehicle(vehicleId, cpId){
+  // Find inventory items for this catalog part, sorted oldest first
+  var items = (_cache.inventory||[]).filter(function(p){return p.catalog_part_id===cpId && p.quantity>0;});
+  items.sort(function(a,b){return (a.date_acquired||'').localeCompare(b.date_acquired||'');});
+  if(items.length===0){
+    toast('No inventory of this part to install - add one first','error');
+    return;
+  }
+  var first = items[0];
+  var cp = _catalog.find(function(p){return p.id===cpId;});
+  await showInstallPartModal(first.id, cpId, cp?cp.name:first.name, first.condition||'', first.shelf_location||'');
+  // Pre-select the vehicle after modal opens
+  setTimeout(function(){
+    var sel = document.getElementById('ip-vehicle');
+    if(sel) sel.value = vehicleId;
+  }, 100);
+}
+
 async function renderPartProfile(arg){
   const el=document.getElementById('view-part-profile');
   if(!el) return;
@@ -605,7 +640,7 @@ async function renderPartProfile(arg){
   if(compatVehicles.length>0){
     compatVehicles.forEach(function(v){
       const vName = getVehicleDisplayName(v);
-      html += '<span class="compat-tag" style="cursor:pointer" onclick="showView(\'vehicle-profile\',{id:\''+v.id+'\'})" title="Go to '+esc(vName)+' profile">🚗 '+esc(vName)+'</span>';
+      html += '<span class="compat-tag" style="cursor:pointer" onclick="startInstallForVehicle(\''+v.id+'\',\''+cp.id+'\')" title="Install a '+esc(cp.name)+' on this vehicle">🚗 '+esc(vName)+'</span>';
     });
   } else {
     // Fallback when no DB vehicles exist yet
@@ -615,8 +650,8 @@ async function renderPartProfile(arg){
   }
   html += '</div></div>';
 
-  // Stock locations
-  if(totalQty>0){
+  // Stock locations - show if ANY inventory record exists (even qty 0)
+  if(inv.length>0){
     html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
     html += renderInvLocations(inv, cp.name, cp.oem||'');
     html += '</div></div>';
@@ -627,7 +662,7 @@ async function renderPartProfile(arg){
   // RIGHT COLUMN
   html += '<div>';
 
-  if(totalQty>0){
+  if(inv.length>0){
     html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
     html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">'+totalQty+'</span></div>';
     html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">'+condBadge(topInv?.condition)+'</span></div>';
@@ -1853,14 +1888,14 @@ function renderPartsTab(installs, vehicleId){
       if(latest.installed_mileage) html+=' @ '+latest.installed_mileage.toLocaleString()+' mi';
       if(latest.time_taken) html+=' &middot; Took: '+esc(latest.time_taken);
       html+='</div>';
-      html+='<div id="'+gid+'" style="display:none;margin-top:10px">';
+      html+='<div id="'+gid+'" style="display:none;margin-top:10px" onclick="event.stopPropagation()">';
       group.items.forEach(function(i){
         html+='<div style="padding:8px 12px;background:var(--bg);border-radius:6px;margin-top:6px;font-size:12px">';
         html+='<div style="font-weight:600">'+fmtDate(i.installed_date)+(i.installed_mileage?' @ '+i.installed_mileage.toLocaleString()+' mi':'')+'</div>';
         if(i.parts) html+='<div style="color:var(--text-muted)">'+esc(i.parts.condition||'-')+'  &middot;  Part #: '+esc(i.parts.part_number||'-')+'</div>';
         if(i.time_taken) html+='<div style="color:var(--text-muted)">Time: '+esc(i.time_taken)+'</div>';
         if(i.notes) html+='<div style="color:var(--text-muted);margin-top:3px">'+esc(i.notes)+'</div>';
-        if(!i.removed_date) html+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm no-print" onclick="showRemovePartModal('+JSON.stringify(i.id)+')">Mark Removed</button></div>';
+        if(!i.removed_date) html+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm no-print" onclick="event.stopPropagation();showRemovePartModal('+JSON.stringify(i.id)+')">Mark Removed</button></div>';
         html+='</div>';
       });
       html+='</div></div>';
@@ -1874,7 +1909,7 @@ function renderPartsTab(installs, vehicleId){
       html+='<div class="install-row" style="opacity:.6;cursor:pointer" onclick="toggleInstallHistory(\''+gid+'\')">';
       html+='<div style="display:flex;justify-content:space-between;align-items:center">';
       html+='<strong>'+esc(group.name)+'</strong><span style="font-size:11px;color:var(--text-muted)">'+group.items.length+' record'+(group.items.length>1?'s':'')+'  &#x25BC;</span></div>';
-      html+='<div id="'+gid+'" style="display:none;margin-top:10px">';
+      html+='<div id="'+gid+'" style="display:none;margin-top:10px" onclick="event.stopPropagation()">';
       group.items.forEach(function(i){
         html+='<div style="padding:8px 12px;background:var(--bg);border-radius:6px;margin-top:6px;font-size:12px">';
         html+='<div>Installed: '+fmtDate(i.installed_date)+(i.installed_mileage?' @ '+i.installed_mileage.toLocaleString()+' mi':'')+'</div>';
