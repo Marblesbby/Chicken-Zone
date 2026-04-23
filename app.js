@@ -366,6 +366,7 @@ async function showView(view, arg){
   if(window.location.hash !== newHash){
     window.location.hash = newHash;
     return; // prevents double- render
+  }
   // Highlight nav
   var navView = (view==='part-profile') ? 'parts' : (view==='vehicle-profile') ? 'vehicles' : view;
   document.querySelectorAll('.nav-item').forEach(function(n){
