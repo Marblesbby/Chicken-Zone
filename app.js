@@ -946,7 +946,13 @@ async function saveCatalogEdit(cpId){
   cp.afm=document.getElementById('ce-afm').value.trim();
   const tools=document.getElementById('ce-tools').value.split('\n').map(t=>t.trim()).filter(Boolean);
   const hardware=document.getElementById('ce-hardware').value.split('\n').map(h=>h.trim()).filter(Boolean);
-  getPartDetail(cpId)={tools,hardware,time:document.getElementById('ce-time').value.trim(),tip:document.getElementById('ce-tip').value.trim()};
+  // Call a setter function instead of assigning to a function call - 
+  getPartDetail[cpId] = {
+    tools,
+    hardware,
+    time: document.getElementById('ce-time').value.trim(),
+    tip: document.getElementById('ce-tip').value.trim()
+};
   toast('Part info updated! (Changes last until page refresh - database persistence coming later)','success');
   closeModal();
   await renderPartProfile({id:cpId, type:'catalog'});
@@ -2387,5 +2393,5 @@ async function deleteWishlistItem(id){
    toast('Removed','success');
    invalidate('wishlist');
    await renderWishlist();
-}
+
 }
