@@ -2366,6 +2366,7 @@ async function saveFoundWishlistItem(){
   const {error:insErr} = await db.from('parts').insert(data);
   if(insErr){ toast(insErr.message,'error'); return; }
 
+async function addToInventoryFromWishlist(wishlistId) {
   // Remove from wishlist
   await db.from('wishlist').delete().eq('id',wishlistId);
 
@@ -2374,7 +2375,6 @@ async function saveFoundWishlistItem(){
   closeModal();
   await renderWishlist();
 }
-
 
 async function markWishlistFound(id){
   await db.from('wishlist').update({found:true}).eq('id',id);
@@ -2388,10 +2388,4 @@ async function deleteWishlistItem(id){
   toast('Removed','success');
   invalidate('wishlist');
   await renderWishlist();
-}
-  //Jessie Added
-localStorage.setItem('cz_view', window.location.hash);
-var saved = localStorage.getItem('cz_view');
-if (saved) {
-  window.location.hash = saved;
 }
