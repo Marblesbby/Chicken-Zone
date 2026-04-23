@@ -2388,4 +2388,4 @@ async function deleteWishlistItem(id){
    invalidate('wishlist');
    await renderWishlist();
 }
-}}
+}
