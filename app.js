@@ -391,7 +391,6 @@ async function showView(view, arg){
 
 // Browser back/forward support
 window.addEventListener('hashchange', function(){
-  window.addEventListener('hashchange', function(){
   var parsed = parseHash(window.location.hash);
   showView(parsed.view, parsed.arg);
 });
