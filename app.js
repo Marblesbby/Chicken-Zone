@@ -2332,61 +2332,59 @@ function toggleFoundEditMode(){
 
 // Save the found item: add to parts inventory, then delete wishlist entry
 async function saveFoundWishlistItem(){
-  const item = window._foundWishlistItem;
-  const catalogPart = window._foundCatalogPart;
-  const wishlistId = window._foundWishlistId;
-  if(!item){ toast('Missing wishlist context','error'); return; }
+   const item = window._foundWishlistItem;
+   const catalogPart = window._foundCatalogPart;
+   const wishlistId = window._foundWishlistId;
+   if(!item){ toast('Missing wishlist context','error'); return; }
 
-  const cond = val('fd-cond');
-  if(!cond){ toast('Please pick a condition','error'); return; }
-  const qty = parseInt(document.getElementById('fd-qty').value) || 1;
+   const cond = val('fd-cond');
+   if(!cond){ toast('Please pick a condition','error'); return; }
+   const qty = parseInt(document.getElementById('fd-qty').value) || 1;
 
-  // Use edited values if the user toggled edit mode (input fields exist either way)
-  const finalName = val('fd-name') || item.name;
-  const finalNum = val('fd-num') || item.part_number || catalogPart?.oem || null;
-  const finalDest = val('fd-dest') || item.compatible_vehicles || null;
+   // Use edited values if the user toggled edit mode (input fields exist either way)
+   const finalName = val('fd-name') || item.name;
+   const finalNum = val('fd-num') || item.part_number || catalogPart?.oem || null;
+   const finalDest = val('fd-dest') || item.compatible_vehicles || null;
 
-  const data = {
-    created_by: currentUser.id,
-    name: finalName,
-    part_number: finalNum,
-    catalog_part_id: catalogPart?.id || null,
-    oem_part_number: catalogPart?.afm || null,
-    condition: cond,
-    quantity: qty,
-    source: val('fd-src') || null,
-    date_acquired: val('fd-date') || null,
-    price_paid: parseFloat(val('fd-price')) || null,
-    sourced_from_vehicle: finalDest,
-    notes: val('fd-notes') || null,
-    low_stock_threshold: null,
-    compatible_vehicles: catalogPart && catalogPart.fits==='all' ? "Nathan's 2004 Denali, Cammy's 2005 Denali, Jessie's 2004 Escalade" : (finalDest || null)
-  };
+   const data = {
+     created_by: currentUser.id,
+     name: finalName,
+     part_number: finalNum,
+     catalog_part_id: catalogPart?.id || null,
+     oem_part_number: catalogPart?.afm || null,
+     condition: cond,
+     quantity: qty,
+     source: val('fd-src') || null,
+     date_acquired: val('fd-date') || null,
+     price_paid: parseFloat(val('fd-price')) || null,
+     sourced_from_vehicle: finalDest,
+     notes: val('fd-notes') || null,
+     low_stock_threshold: null,
+     compatible_vehicles: catalogPart && catalogPart.fits==='all' ? "Nathan's 2004 Denali, Cammy's 2005 Denali, Jessie's 2004 Escalade" : (finalDest || null)
+   };
 
-  const {error:insErr} = await db.from('parts').insert(data);
-  if(insErr){ toast(insErr.message,'error'); return; }
+   const {error:insErr} = await db.from('parts').insert(data);
+   if(insErr){ toast(insErr.message,'error'); return; }
 
-async function addToInventoryFromWishlist(wishlistId) {
-  // Remove from wishlist
-  await db.from('wishlist').delete().eq('id',wishlistId);
+   // Remove from wishlist
+   await db.from('wishlist').delete().eq('id',wishlistId);
 
-  toast('Added to inventory & removed from wishlist!','success');
-  invalidate('inventory','wishlist','dashboard');
-  closeModal();
-  await renderWishlist();
+   toast('Added to inventory & removed from wishlist!','success');
+   invalidate('inventory','wishlist','dashboard');
+   closeModal();
+   await renderWishlist();
 }
 
 async function markWishlistFound(id){
-  await db.from('wishlist').update({found:true}).eq('id',id);
-  toast('Marked as found!','success');
-  await renderWishlist();
+   await db.from('wishlist').update({found:true}).eq('id',id);
+   toast('Marked as found!','success');
+   await renderWishlist();
 }
 
 async function deleteWishlistItem(id){
-  if(!confirm('Remove from wishlist?')) return;
-  await db.from('wishlist').delete().eq('id',id);
-  toast('Removed','success');
-  invalidate('wishlist');
-  await renderWishlist();
-  }
+   if(!confirm('Remove from wishlist?')) return;
+   await db.from('wishlist').delete().eq('id',id);
+   toast('Removed','success');
+   invalidate('wishlist');
+   await renderWishlist();
 }
