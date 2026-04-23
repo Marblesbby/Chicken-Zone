@@ -2388,4 +2388,5 @@ async function deleteWishlistItem(id){
   toast('Removed','success');
   invalidate('wishlist');
   await renderWishlist();
+  }
 }
