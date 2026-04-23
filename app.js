@@ -345,7 +345,7 @@ async function signUp(){
   if(username.length < 3) return toast('Username must be at least 3 characters','error');
   if(email.indexOf('@') < 0) return toast('Please enter a valid email','error');
   var internalEmail = username + '@chickzone.internal';
-  var r = await db.auth.signUp({email:internalEmail, password:password, options:{data:{username:username, real_email:email}}});
+  var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
   if(r.error){ toast(r.error.message,'error'); return; }
   if(r.data && r.data.user){
     await db.from('profiles').upsert({id:r.data.user.id, username:username, full_name:username, real_email:email}).catch(function(){
