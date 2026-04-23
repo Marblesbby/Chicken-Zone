@@ -1,322 +1,402 @@
-// NOTE: Run this SQL in Supabase:
-// ALTER TABLE part_installations ADD COLUMN IF NOT EXISTS time_taken text;
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHICKEN ZONE — app.js (Clean Rewrite)
+// Auto Parts Inventory Manager for GMT800 family garage
+// Data: Supabase (catalog_parts, part_details, parts, vehicles, wishlist)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── CHICKEN ZONE — app.js ────────────────────────────────────────────────────
-// Single-page app for GMT800 family parts inventory
-// Data layer: Supabase (catalog_parts, part_details, parts, vehicles, wishlist)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+var SUPABASE_URL = 'https://oqseclogmhqlfhjhxmai.supabase.co';
+var SUPABASE_KEY = 'sb_publishable_5v-bGGy8gfVVMQHLbcKmEQ_HB7Y7Lrs';
+var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+var LS_KEY = 'cz_appdata_v3';  // bump version to auto-clear old corrupt caches
+var LS_TTL = 10 * 60 * 1000;   // 10 minute cache TTL
 
-const {createClient} = supabase;
-const SUPABASE_URL = 'https://oqseclogmhqlfhjhxmai.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_5v-bGGy8gfVVMQHLbcKmEQ_HB7Y7Lrs';
-const db = createClient(SUPABASE_URL, SUPABASE_KEY);
-const ANTHROPIC_KEY = ''; // Optional: paste your Anthropic key here for AI receipt scanning
-
-// ─── CATALOG CACHE ───────────────────────────────────────────────────────────
-// Loaded once on login from Supabase. Never re-fetched unless page is refreshed.
-// All functions that used GMT800[] and PART_DETAILS{} now read from here.
-let _catalog = [];       // normalized catalog parts (same shape as old GMT800 array)
-let _partDetails = {};   // keyed by catalog_part_id (same shape as old PART_DETAILS)
-
-// ─── DATA CACHE ───────────────────────────────────────────────────────────────
-// Keeps fetched data in memory so tab switches are instant.
-// Invalidated by any write operation (add/edit/delete).
-const _cache = {
-  inventory:  null,   // all parts rows
-  vehicles:   null,   // all vehicles rows
-  wishlist:   null,   // all wishlist rows
-  dashboard:  null,   // {parts, reminders, totalParts, totalVehicles}
-};
-function invalidate(...keys){
-  if(keys.length===0){ Object.keys(_cache).forEach(k=>_cache[k]=null); }
-  else keys.forEach(k=>{ _cache[k]=null; });
-  // Refresh in background so next page load gets fresh data
-  if(typeof refreshFromSupabase==='function') refreshFromSupabase(false);
-}
-
-// ─── CAT ICONS (static, no need for DB) ──────────────────────────────────────
-const CAT_ICONS = {
-  'Maintenance':'🛢','Engine':'⚙️','Cooling':'🌡','Fuel':'⛽',
-  'Transmission':'🔄','Transfer Case':'4️⃣','Drivetrain':'🔩','Brakes':'🛑',
-  'Suspension':'🔧','Steering':'🎯','Electrical':'⚡','Lighting':'💡',
-  'Interior':'🪑','Exterior':'🚗','HVAC':'❄️'
+// ─── CAT ICONS ───────────────────────────────────────────────────────────────
+var CAT_ICONS = {
+  'Maintenance':'\u{1F6E2}','Engine':'\u2699\uFE0F','Cooling':'\u{1F321}','Fuel':'\u26FD',
+  'Transmission':'\u{1F504}','Transfer Case':'4\uFE0F\u20E3','Drivetrain':'\u{1F529}',
+  'Brakes':'\u{1F6D1}','Suspension':'\u{1F527}','Steering':'\u{1F3AF}',
+  'Electrical':'\u26A1','Lighting':'\u{1F4A1}','Interior':'\u{1FA91}',
+  'Exterior':'\u{1F697}','HVAC':'\u2744\uFE0F'
 };
 
-// ─── LOAD CATALOG FROM SUPABASE ──────────────────────────────────────────────
-// ─── LOCAL STORAGE CACHING (Phase 5) ─────────────────────────────────────────
-const LS_KEY = 'cz_appdata_v2';
-const LS_TTL = 10 * 60 * 1000; // 10 minutes
+// ─── STATE ───────────────────────────────────────────────────────────────────
+// Single source of truth. Every read goes through here.
+var _catalog = [];        // normalized catalog parts from Supabase
+var _partDetails = {};    // keyed by catalog_part_id
+var _cache = {
+  inventory: null,
+  vehicles:  null,
+  wishlist:  null,
+  dashboard: null
+};
+var currentUser = null;
+var dbInventory = [];     // alias for _cache.inventory (legacy compat)
 
-function saveToLocalStorage(data){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify({ts:Date.now(), data:data})); }
-  catch(e){ console.warn('localStorage save failed:', e); }
+// UI state
+var partsSort = 'alpha', partsSortDir = 1, partSearch = '', partsTimer = null;
+var partsQtyFilter = 'all';
+var wizardStep = 1, wizardVehicle = null, wizardCat = null, wizardPart = null;
+var addMode = '';
+var cameraStream = null;
+var _currentPartProfile = {id:null, name:'', type:'catalog'};
+var _currentVehicleProfile = {id:null, tab:'overview'};
+var _navigating = false;   // prevents hashchange loop
+
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
+function esc(s){
+  if(!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-
-function loadFromLocalStorage(){
-  try{
-    const raw = localStorage.getItem(LS_KEY);
-    if(!raw) return null;
-    const parsed = JSON.parse(raw);
-    if(!parsed||!parsed.ts||!parsed.data) return null;
-    if(Date.now()-parsed.ts > LS_TTL){ localStorage.removeItem(LS_KEY); return null; }
-    return parsed.data;
-  }catch(e){ try{localStorage.removeItem(LS_KEY);}catch(le){} return null; }
+function val(id){ var el=document.getElementById(id); return el ? el.value.trim() : ''; }
+function fmtDate(d){
+  if(!d) return '-';
+  var dt = new Date(d+'T12:00:00');
+  return dt.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'});
 }
-
-function applyAppData(d){
-  if(!d||typeof d!=='object') throw new Error('Invalid cache data');
-  _catalog = (d.catalog||[]).map(function(row){
-    return {id:row.id,name:row.name,cat:row.cat||row.category,sub:row.sub||row.subcategory||'',
-      oem:row.oem||row.oem_number||'',afm:row.afm||row.aftermarket_ref||'',
-      rank:row.rank||row.failure_rank||999,fits:row.fits||'all',desc:row.desc||row.description||''};
+function toast(msg, type){
+  type = type || 'info';
+  var c = document.getElementById('toast-container');
+  if(!c) return;
+  var t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(function(){ t.remove(); }, 3800);
+}
+function showModal(html){
+  var el = document.getElementById('modal-container');
+  if(el) el.innerHTML = html;
+}
+function closeModal(){
+  var el = document.getElementById('modal-container');
+  if(el) el.innerHTML = '';
+  stopCamera();
+}
+function condBadge(c){
+  var m = {'New':'badge-new','Used - Good':'badge-good','Used - Fair':'badge-fair','Used - Poor':'badge-poor'};
+  return c ? '<span class="badge '+(m[c]||'')+'">'+c+'</span>' : '<span style="color:var(--text-dim)">-</span>';
+}
+function prioBadge(p){
+  var m = {'High':'badge-high','Medium':'badge-medium','Low':'badge-ok'};
+  return p ? '<span class="badge '+(m[p]||'')+'">'+p+'</span>' : '';
+}
+function colorToCss(name){
+  if(!name) return '#888';
+  var n = name.toLowerCase().trim();
+  var map = {black:'#0a0a0a',white:'#eee',silver:'#c0c0c0',gray:'#888',grey:'#888',red:'#cc0000',blue:'#1e4db7',navy:'#001f5a',green:'#2d7a2d',yellow:'#d4b800',orange:'#e67e00',brown:'#5a3a1e',tan:'#c8a876',beige:'#d4c4a8',gold:'#b8860b',maroon:'#800000',purple:'#4b0082',pink:'#e8769e'};
+  return map[n] || '#888';
+}
+function withTimeout(promise, ms){
+  ms = ms || 20000;
+  var t = new Promise(function(_, reject){
+    setTimeout(function(){ reject(new Error('Request timed out after '+(ms/1000)+'s. Try refreshing.')); }, ms);
   });
-  _partDetails = d.partDetails||{};
-  _cache.inventory = d.inventory||[];
-  _cache.vehicles  = d.vehicles||[];
-  _cache.wishlist  = d.wishlist||[];
+  return Promise.race([promise, t]);
+}
+function errBox(msg){
+  return '<div style="padding:40px 32px"><div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6"><strong style="font-size:16px;display:block;margin-bottom:8px">\u26A0\uFE0F Could Not Load Data</strong>'+esc(msg)+'<br><br><button class="btn btn-secondary btn-sm" onclick="location.reload()">\u{1F504} Retry</button></div></div>';
+}
+function viewLoading(msg){
+  return '<div class="view-loading"><div class="egg-spin-sm">\u{1F95A}</div><div style="font-family:Barlow Condensed,sans-serif;font-size:13px;letter-spacing:1px;text-transform:uppercase">'+(msg||'Loading...')+'</div></div>';
+}
+function showSpinner(msg){
+  var el = document.getElementById('app-spinner');
+  if(!el) return;
+  var label = el.querySelector('.spinner-label');
+  if(label && msg) label.textContent = msg;
+  el.style.display = 'flex';
+}
+function hideSpinner(){
+  var el = document.getElementById('app-spinner');
+  if(el) el.style.display = 'none';
+}
+async function uploadFile(bucket, file){
+  var ext = file.name.split('.').pop();
+  var path = currentUser.id + '/' + Date.now() + '.' + ext;
+  var r = await db.storage.from(bucket).upload(path, file);
+  if(r.error) throw r.error;
+  var u = db.storage.from(bucket).getPublicUrl(path);
+  return u.data.publicUrl;
+}
+function toggleSidebar(){
+  var sb = document.getElementById('sidebar');
+  var ov = document.getElementById('sidebar-overlay');
+  var open = sb.classList.toggle('open');
+  ov.classList.toggle('visible', open);
+}
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('visible');
+}
+function stopCamera(){ if(cameraStream){ cameraStream.getTracks().forEach(function(t){t.stop();}); cameraStream=null; } }
+function getLocations(){ try{return JSON.parse(localStorage.getItem('cz_locations')||'[]');}catch(e){return[];} }
+function saveLocations(locs){ localStorage.setItem('cz_locations', JSON.stringify(locs)); }
+function getVehicleDisplayName(v){
+  if(!v) return 'Unknown';
+  var notes = v.notes || '';
+  var m = notes.match(/Driver:\s*([^.,\n]+)/i);
+  if(m) return m[1].trim() + "'s " + v.model;
+  return v.year + ' ' + v.make + ' ' + v.model;
+}
+function getCatalog(){ return _catalog; }
+function getPartDetail(id){ return _partDetails[id] || null; }
+function getCategories(){ return [].concat(new Set(_catalog.map(function(p){return p.cat;}))).filter(function(v,i,a){return a.indexOf(v)===i;}).sort(); }
+
+// ─── URL HASH ROUTING ────────────────────────────────────────────────────────
+// Must be defined BEFORE auth handler which calls parseHash on startup
+function buildHash(view, arg){
+  if(!arg) return '#' + view;
+  return '#' + view + '/' + encodeURIComponent(JSON.stringify(arg));
+}
+function parseHash(hash){
+  if(!hash || hash === '#' || hash === '') return {view:'dashboard', arg:null};
+  var h = hash.replace(/^#/, '');
+  var slash = h.indexOf('/');
+  if(slash < 0) return {view:h, arg:null};
+  var view = h.substring(0, slash);
+  try {
+    var arg = JSON.parse(decodeURIComponent(h.substring(slash + 1)));
+    return {view:view, arg:arg};
+  } catch(e) {
+    return {view:view, arg:null};
+  }
+}
+
+// ─── LOCALSTORAGE CACHE ──────────────────────────────────────────────────────
+function saveToLS(data){
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ts:Date.now(), data:data})); }
+  catch(e){ /* quota exceeded or private browsing - ignore */ }
+}
+function loadFromLS(){
+  try {
+    var raw = localStorage.getItem(LS_KEY);
+    if(!raw) return null;
+    var parsed = JSON.parse(raw);
+    if(!parsed || !parsed.ts || !parsed.data) { localStorage.removeItem(LS_KEY); return null; }
+    if(Date.now() - parsed.ts > LS_TTL) { localStorage.removeItem(LS_KEY); return null; }
+    if(!parsed.data.catalog || !Array.isArray(parsed.data.catalog)) { localStorage.removeItem(LS_KEY); return null; }
+    return parsed.data;
+  } catch(e) {
+    try { localStorage.removeItem(LS_KEY); } catch(le){}
+    return null;
+  }
+}
+function normalizeCatalog(rows){
+  return (rows||[]).map(function(row){
+    return {
+      id: row.id, name: row.name,
+      cat: row.cat || row.category || '',
+      sub: row.sub || row.subcategory || '',
+      oem: row.oem || row.oem_number || '',
+      afm: row.afm || row.aftermarket_ref || '',
+      rank: row.rank || row.failure_rank || 999,
+      fits: row.fits || 'all',
+      desc: row.desc || row.description || ''
+    };
+  });
+}
+function normalizeDetails(rows){
+  var out = {};
+  (rows||[]).forEach(function(row){
+    var key = row.catalog_part_id || row.id;
+    out[key] = {
+      time: row.time || row.estimated_time || '',
+      tools: row.tools || [],
+      hardware: row.hardware || [],
+      tip: row.tip || row.pro_tip || ''
+    };
+  });
+  return out;
+}
+function applyAppData(d){
+  if(!d || typeof d !== 'object') throw new Error('Invalid cache data');
+  _catalog = normalizeCatalog(d.catalog);
+  _partDetails = (d.partDetails && typeof d.partDetails === 'object') ? d.partDetails : normalizeDetails([]);
+  _cache.inventory = d.inventory || [];
+  _cache.vehicles  = d.vehicles  || [];
+  _cache.wishlist  = d.wishlist  || [];
   dbInventory = _cache.inventory;
 }
 
-async function loadCatalog(){
-  // Try localStorage first for instant startup
-  const cached = loadFromLocalStorage();
-  if(cached && cached.catalog && cached.catalog.length>0){
-    try{
+// ─── DATA LOADING ────────────────────────────────────────────────────────────
+async function loadAllData(){
+  // Step 1: Try localStorage for instant startup
+  var cached = loadFromLS();
+  if(cached && cached.catalog && cached.catalog.length > 0){
+    try {
       showSpinner('Opening the garage...');
       applyAppData(cached);
-      console.log('Loaded from localStorage instantly');
+      console.log('Loaded from cache: ' + _catalog.length + ' parts');
       refreshFromSupabase(false); // silent background refresh
       return;
-    }catch(e){
+    } catch(e){
       console.warn('Cache corrupt, clearing:', e);
-      try{localStorage.removeItem(LS_KEY);}catch(le){}
+      try { localStorage.removeItem(LS_KEY); } catch(le){}
     }
   }
-  // No cache: full load
+  // Step 2: Full load from Supabase
   showSpinner('Waking up the garage...');
   await refreshFromSupabase(true);
 }
 
 async function refreshFromSupabase(showErrors){
-  try{
-    const [catRes,detRes,invRes,vehRes,wishRes] = await Promise.all([
+  try {
+    var results = await withTimeout(Promise.all([
       db.from('catalog_parts').select('*').order('failure_rank'),
       db.from('part_details').select('*'),
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
       db.from('wishlist').select('*').order('created_at',{ascending:false})
-    ]);
-    if(catRes.error) throw new Error('Catalog: '+catRes.error.message);
-    const catalog = (catRes.data||[]).map(function(row){
-      return {id:row.id,name:row.name,cat:row.category,sub:row.subcategory||'',
-        oem:row.oem_number||'',afm:row.aftermarket_ref||'',
-        rank:row.failure_rank||999,fits:row.fits||'all',desc:row.description||''};
-    });
-    const partDetails = {};
-    (detRes.data||[]).forEach(function(row){
-      partDetails[row.catalog_part_id]={time:row.estimated_time||'',tools:row.tools||[],hardware:row.hardware||[],tip:row.pro_tip||''};
-    });
-    const freshData = {catalog,partDetails,inventory:invRes.data||[],vehicles:vehRes.data||[],wishlist:wishRes.data||[]};
+    ]), 30000);
+    if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
+    var freshData = {
+      catalog:     normalizeCatalog(results[0].data || []),
+      partDetails: normalizeDetails(results[1].data || []),
+      inventory:   results[2].data || [],
+      vehicles:    results[3].data || [],
+      wishlist:    results[4].data || []
+    };
     applyAppData(freshData);
-    saveToLocalStorage(freshData);
-    console.log('Refreshed from Supabase: '+catalog.length+' parts');
-  }catch(e){
+    saveToLS(freshData);
+    console.log('Refreshed from Supabase: ' + _catalog.length + ' parts');
+  } catch(e){
     console.error('Supabase refresh failed:', e);
-    if(showErrors) toast('Could not connect to Supabase. Check your internet and try refreshing.','error');
+    if(showErrors) toast('Could not connect to Supabase. Check your internet and refresh.', 'error');
   }
 }
 
+function invalidate(){
+  // Clear in-memory caches. Don't wipe localStorage — background refresh will update it.
+  _cache.inventory = null;
+  _cache.vehicles  = null;
+  _cache.wishlist  = null;
+  _cache.dashboard = null;
+  refreshFromSupabase(false);
+}
 
-// ─── CACHED FETCH HELPERS ────────────────────────────────────────────────────
 async function fetchInventory(force){
   if(!force && _cache.inventory) return _cache.inventory;
-  const{data,error}=await withTimeout(db.from('parts').select('*'));
-  if(error) throw new Error(error.message);
-  _cache.inventory = data||[];
+  var r = await withTimeout(db.from('parts').select('*'));
+  if(r.error) throw new Error(r.error.message);
+  _cache.inventory = r.data || [];
   dbInventory = _cache.inventory;
   return _cache.inventory;
 }
 async function fetchVehicles(force){
   if(!force && _cache.vehicles) return _cache.vehicles;
-  const{data,error}=await withTimeout(db.from('vehicles').select('*').order('year',{ascending:false}));
-  if(error) throw new Error(error.message);
-  _cache.vehicles = data||[];
+  var r = await withTimeout(db.from('vehicles').select('*').order('year',{ascending:false}));
+  if(r.error) throw new Error(r.error.message);
+  _cache.vehicles = r.data || [];
   return _cache.vehicles;
 }
 async function fetchWishlist(force){
   if(!force && _cache.wishlist) return _cache.wishlist;
-  const{data,error}=await withTimeout(db.from('wishlist').select('*').order('created_at',{ascending:false}));
-  if(error) throw new Error(error.message);
-  _cache.wishlist = data||[];
+  var r = await withTimeout(db.from('wishlist').select('*').order('created_at',{ascending:false}));
+  if(r.error) throw new Error(r.error.message);
+  _cache.wishlist = r.data || [];
   return _cache.wishlist;
 }
 
-// Helpers to replace GMT800 and PART_DETAILS references
-function getCatalog(){ return _catalog; }
-function getPartDetail(id){ return _partDetails[id] || null; }
-function getCategories(){ return [...new Set(_catalog.map(function(p){return p.cat;}))].sort(); }
-
-// ─── SPINNER HELPERS ─────────────────────────────────────────────────────────
-function showSpinner(msg){
-  const el = document.getElementById('app-spinner');
-  if(!el) return;
-  const label = el.querySelector('.spinner-label');
-  if(label && msg) label.textContent = msg;
-  el.style.display = 'flex';
-}
-function hideSpinner(){
-  const el = document.getElementById('app-spinner');
-  if(el) el.style.display = 'none';
-}
-function viewLoading(msg){
-  return '<div class="view-loading"><div class="egg-spin-sm">🥚</div><div style="font-family:\'Barlow Condensed\',sans-serif;font-size:13px;letter-spacing:1px;text-transform:uppercase">'+(msg||'Loading...')+'</div></div>';
-}
-
-
-// ─── STATE ──────────────────────────────────────────────────────────────────
-let currentUser=null, selectedVehicleId=null, vehicleDetailTab='overview';
-let partsSort='alpha', partsSortDir=1, partSearch='', partsTimer=null, partsQtyFilter='all'; // all | instock | outstock
-let wizardStep=1, wizardVehicle=null, wizardCat=null, wizardPart=null;
-let addMode=''; // 'ai' or 'manual'
-let dbInventory=[]; // cached inventory from supabase
-let _catalogLoaded=false;
-
-// Shelf locations stored in localStorage
-function getLocations(){try{return JSON.parse(localStorage.getItem('cz_locations')||'[]')}catch{return[]}}
-function saveLocations(locs){localStorage.setItem('cz_locations',JSON.stringify(locs))}
-
-// ─── COLOR HELPER ─────────────────────────────────────────────────────────────
-function colorToCss(name){
-  if(!name) return '#888';
-  const n=name.toLowerCase().trim();
-  const map={black:'#0a0a0a',white:'#eee',silver:'#c0c0c0',gray:'#888',grey:'#888',red:'#cc0000',blue:'#1e4db7',navy:'#001f5a',green:'#2d7a2d',yellow:'#d4b800',orange:'#e67e00',brown:'#5a3a1e',tan:'#c8a876',beige:'#d4c4a8',gold:'#b8860b',maroon:'#800000',purple:'#4b0082',pink:'#e8769e'};
-  return map[n]||'#888';
-}
-
-// ─── UTILS ───────────────────────────────────────────────────────────────────
-function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function val(id){const el=document.getElementById(id);return el?el.value.trim():''}
-function fmtDate(d){if(!d)return' - ';const dt=new Date(d+'T12:00:00');return dt.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'})}
-function toast(msg,type='info'){const c=document.getElementById('toast-container');const t=document.createElement('div');t.className=`toast toast-${type}`;t.textContent=msg;c.appendChild(t);setTimeout(()=>t.remove(),3800)}
-function showModal(html){document.getElementById('modal-container').innerHTML=html}
-function closeModal(){document.getElementById('modal-container').innerHTML='';stopCamera()}
-function condBadge(c){const m={'New':'badge-new','Used - Good':'badge-good','Used - Fair':'badge-fair','Used - Poor':'badge-poor'};return c?`<span class="badge ${m[c]||''}">${c}</span>`:'<span style="color:var(--text-dim)"> - </span>'}
-function prioBadge(p){const m={'High':'badge-high','Medium':'badge-medium','Low':'badge-ok'};return p?`<span class="badge ${m[p]||''}">${p}</span>`:''}
-async function uploadFile(bucket,file){const ext=file.name.split('.').pop();const path=`${currentUser.id}/${Date.now()}.${ext}`;const{error}=await db.storage.from(bucket).upload(path,file);if(error)throw error;const{data}=db.storage.from(bucket).getPublicUrl(path);return data.publicUrl}
-
-
-function toggleSidebar(){const sb=document.getElementById('sidebar');const ov=document.getElementById('sidebar-overlay');const open=sb.classList.toggle('open');ov.classList.toggle('visible',open);}
-function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('sidebar-overlay').classList.remove('visible');}
-// ─── TIMEOUT HELPER ──────────────────────────────────────────────────────────
-function withTimeout(promise, ms=20000){
-  const t=new Promise((_,reject)=>setTimeout(()=>reject(new Error(`Request timed out after ${ms/1000}s. Try refreshing the page. If the problem persists, check your internet connection.`)),ms));
-  return Promise.race([promise,t]);
-}
-function errBox(msg){return`<div style="padding:40px 32px"><div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6"><strong style="font-size:16px;display:block;margin-bottom:8px">⚠️ Could Not Load Data</strong>${msg}<br><br><button class="btn btn-secondary btn-sm" onclick="location.reload()">🔄 Retry</button></div></div>`;}
-
-
-// ─── URL HASH ROUTING ────────────────────────────────────────────────────────
-function buildHash(view, arg){
-  if(!arg) return '#'+view;
-  return '#'+view+'/'+encodeURIComponent(JSON.stringify(arg));
-}
-
-function parseHash(hash){
-  if(!hash||hash==='#') return {view:'dashboard',arg:null};
-  var h=hash.replace(/^#/,'');
-  var slash=h.indexOf('/');
-  if(slash<0) return {view:h,arg:null};
-  var view=h.substring(0,slash);
-  try{var arg=JSON.parse(decodeURIComponent(h.substring(slash+1)));return {view:view,arg:arg};}
-  catch(e){return {view:view,arg:null};}
-}
-
-var _navigating=false;
-
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
-db.auth.onAuthStateChange(async(event,session)=>{
-  if(session?.user){
-    currentUser=session.user;
-    document.getElementById('user-email-display').textContent=currentUser.user_metadata?.username||currentUser.email;
-    // Load catalog from Supabase (with spinner showing)
-    await loadCatalog();
-    document.getElementById('app-spinner').style.display='none';
-    document.getElementById('auth-screen').style.display='none';
-    document.getElementById('app').style.display='flex';
+db.auth.onAuthStateChange(async function(event, session){
+  if(session && session.user){
+    currentUser = session.user;
+    var display = document.getElementById('user-email-display');
+    if(display) display.textContent = (currentUser.user_metadata && currentUser.user_metadata.username) || currentUser.email;
+    await loadAllData();
+    hideSpinner();
+    var authEl = document.getElementById('auth-screen');
+    var appEl = document.getElementById('app');
+    if(authEl) authEl.style.display = 'none';
+    if(appEl) appEl.style.display = 'flex';
+    // Restore from URL hash
     var parsed = parseHash(window.location.hash);
-    var lastView = (parsed.view && parsed.view !== 'dashboard') ? parsed.view : 'dashboard';
-    var lastArg = parsed.arg || null;
-    await showView(lastView, lastArg);
+    await showView(parsed.view || 'dashboard', parsed.arg);
   } else {
-    currentUser=null;
-    document.getElementById('app-spinner').style.display='none';
-    document.getElementById('auth-screen').style.display='flex';
-    document.getElementById('app').style.display='none';
+    currentUser = null;
+    hideSpinner();
+    var authEl2 = document.getElementById('auth-screen');
+    var appEl2 = document.getElementById('app');
+    if(authEl2) authEl2.style.display = 'flex';
+    if(appEl2) appEl2.style.display = 'none';
   }
 });
-function switchAuthTab(tab){document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',(i===0&&tab==='login')||(i===1&&tab==='register')));document.getElementById('auth-form-login').style.display=tab==='login'?'block':'none';document.getElementById('auth-form-register').style.display=tab==='register'?'block':'none'}
+
+function switchAuthTab(tab){
+  var tabs = document.querySelectorAll('.auth-tab');
+  tabs.forEach(function(t, i){ t.classList.toggle('active', (i===0 && tab==='login') || (i===1 && tab==='register')); });
+  document.getElementById('auth-form-login').style.display = tab==='login' ? 'block' : 'none';
+  document.getElementById('auth-form-register').style.display = tab==='register' ? 'block' : 'none';
+}
 async function signIn(){
-  const input=document.getElementById('login-username').value.trim();
-  const password=document.getElementById('login-password').value;
-  if(!input||!password){toast('Please enter your username or email and password','error');return;}
-  const email=input.includes('@')?input:(input+'@chickzone.internal');
-  const result=await db.auth.signInWithPassword({email:email,password:password});
-  if(result.error){
-    toast('Incorrect credentials. Tip: use your original email address if you registered before the username update.','error');
-  }
+  var input = document.getElementById('login-username').value.trim();
+  var password = document.getElementById('login-password').value;
+  if(!input || !password){ toast('Please enter your username and password','error'); return; }
+  var email = input.indexOf('@') >= 0 ? input : (input + '@chickzone.internal');
+  var result = await db.auth.signInWithPassword({email:email, password:password});
+  if(result.error) toast('Incorrect credentials','error');
 }
 async function signUp(){
-  const username=document.getElementById('reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
-  const email=document.getElementById('reg-email').value.trim();
-  const password=document.getElementById('reg-password').value;
-  if(!username||!email||!password)return toast('Please fill all fields','error');
-  if(username.length<3)return toast('Username must be at least 3 characters','error');
-  if(!email.includes('@'))return toast('Please enter a valid email address','error');
-  const internalEmail=username+'@chickzone.internal';
-  const{data,error}=await db.auth.signUp({email:internalEmail,password,options:{data:{username,real_email:email}}});
-  if(error){toast(error.message,'error');return;}
-  if(data?.user){
-    await db.from('profiles').upsert({id:data.user.id,username,full_name:username,real_email:email}).catch(()=>
-      db.from('profiles').upsert({id:data.user.id,full_name:username})
-    );
+  var username = document.getElementById('reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
+  var email = document.getElementById('reg-email').value.trim();
+  var password = document.getElementById('reg-password').value;
+  if(!username || !email || !password) return toast('Please fill all fields','error');
+  if(username.length < 3) return toast('Username must be at least 3 characters','error');
+  if(email.indexOf('@') < 0) return toast('Please enter a valid email','error');
+  var internalEmail = username + '@chickzone.internal';
+  var r = await db.auth.signUp({email:internalEmail, password:password, options:{data:{username:username, real_email:email}}});
+  if(r.error){ toast(r.error.message,'error'); return; }
+  if(r.data && r.data.user){
+    await db.from('profiles').upsert({id:r.data.user.id, username:username, full_name:username, real_email:email}).catch(function(){
+      return db.from('profiles').upsert({id:r.data.user.id, full_name:username});
+    });
   }
   toast('Account created! Sign in with your username.','success');
   switchAuthTab('login');
-  document.getElementById('login-username').value=username;
+  document.getElementById('login-username').value = username;
 }
-async function signOut(){await db.auth.signOut()}
+async function signOut(){ await db.auth.signOut(); }
 
-// ─── NAVIGATION ───────────────────────────────────────────────────────────────
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
 async function showView(view, arg){
-  if(window.innerWidth<=768) closeSidebar();
-  // Update URL hash so browser back button works and refresh restores this view
+  if(window.innerWidth <= 768) closeSidebar();
+  // Update URL hash for bookmarkability and back/forward
   var newHash = buildHash(view, arg);
   if(window.location.hash !== newHash){
     _navigating = true;
     window.location.hash = newHash;
-    setTimeout(function(){ _navigating=false; }, 50);
+    setTimeout(function(){ _navigating = false; }, 100);
   }
-  // Only highlight nav for top-level views
-  const navView = (view==='part-profile')?'parts':(view==='vehicle-profile')?'vehicles':view;
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.view===navView));
-  document.querySelectorAll('#main-content > div').forEach(d=>d.style.display='none');
-  const el=document.getElementById('view-'+view);
-  if(el) el.style.display='block';
-  if(view==='dashboard') await renderDashboard();
-  else if(view==='parts') await renderPartsPage();
-  else if(view==='part-profile') await renderPartProfile(arg);
-  else if(view==='vehicles'){selectedVehicleId=null; await renderVehicles();}
-  else if(view==='vehicle-profile') await renderVehicleProfile(arg);
-  else if(view==='wishlist') await renderWishlist();
+  // Highlight nav
+  var navView = (view==='part-profile') ? 'parts' : (view==='vehicle-profile') ? 'vehicles' : view;
+  document.querySelectorAll('.nav-item').forEach(function(n){
+    n.classList.toggle('active', n.dataset.view === navView);
+  });
+  // Show correct view container
+  document.querySelectorAll('#main-content > div').forEach(function(d){ d.style.display = 'none'; });
+  var el = document.getElementById('view-' + view);
+  if(el) el.style.display = 'block';
+  // Render
+  try {
+    if(view === 'dashboard') await renderDashboard();
+    else if(view === 'parts') await renderPartsPage();
+    else if(view === 'part-profile') await renderPartProfile(arg);
+    else if(view === 'vehicles') await renderVehicles();
+    else if(view === 'vehicle-profile') await renderVehicleProfile(arg);
+    else if(view === 'wishlist') await renderWishlist();
+  } catch(err){
+    console.error('showView error for ' + view + ':', err);
+    if(el) el.innerHTML = errBox(err.message);
+  }
 }
 
-// Browser back/forward button support
-window.addEventListener('hashchange', async function(){
+// Browser back/forward support
+window.addEventListener('hashchange', function(){
   if(_navigating) return;
   var parsed = parseHash(window.location.hash);
-  await showView(parsed.view, parsed.arg);
+  showView(parsed.view, parsed.arg);
 });
-
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
   const el=document.getElementById('view-dashboard');
@@ -365,7 +445,8 @@ async function renderDashboard(){
 // ─── PARTS PAGE ───────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderPartsPage(){
-  const el=document.getElementById('view-parts');
+  var el=document.getElementById('view-parts');
+  if(!el) return;
   if(!el){ console.error('view-parts element missing'); return; }
   // Only show loading spinner if we have nothing cached yet
   if(!_cache.inventory) el.innerHTML=viewLoading('Loading parts...');
@@ -484,7 +565,7 @@ function setPartsSort(s){if(partsSort===s){partsSortDir*=-1;}else{partsSort=s;pa
 function setPartsQtyFilter(f){partsQtyFilter=f;renderPartsList()}
 
 // ─── PART PROFILE - FULL PAGE VIEW ───────────────────────────────────────────
-let _currentPartProfile={id:null,name:'',type:'catalog'};
+// (declared in foundation)
 
 // Legacy wrapper so existing calls to showPartProfile still work
 async function showPartProfile(id, type){
@@ -750,18 +831,6 @@ async function renderPartProfile(arg){
 }
 
 // Get display name for a vehicle from notes field (Driver: X format)
-function getVehicleDisplayName(v){
-  if(!v) return 'Unknown';
-  const notes = v.notes || '';
-  const driverMatch = notes.match(/Driver:\s*([^.,\n]+)/i);
-  if(driverMatch){
-    const driver = driverMatch[1].trim();
-    return driver+"'s "+v.model;
-  }
-  return v.year+' '+v.make+' '+v.model;
-}
-
-
 function addToWishlistQ(catalogId,evt){
   const name=(evt?.target||event.target).closest('[data-name]')?.dataset?.name
     || _catalog.find(p=>p.id===catalogId)?.name || 'Unknown Part';
@@ -923,9 +992,6 @@ function renderInvLocations(inv, partName, partOem){
 }
 
 // ─── LOCATION MODAL ───────────────────────────────────────────────────────────
-let cameraStream=null;
-function stopCamera(){if(cameraStream){cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null}}
-
 function showLocationModal(partId){
   const locs=getLocations();
   showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:460px">
@@ -1470,7 +1536,7 @@ async function refreshVehicleView(){
 
 
 // ─── VEHICLE PROFILE - FULL PAGE VIEW ────────────────────────────────────────
-let _currentVehicleProfile={id:null,tab:'overview'};
+// (declared in foundation)
 
 async function renderVehicleProfile(arg){
   const el=document.getElementById('view-vehicle-profile');
@@ -1770,7 +1836,7 @@ async function logMileage(vehicleId){const mileage=parseInt(document.getElementB
 
 async function showServiceModal(vehicleId){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Add Service Record</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Service Type *</label><input type="text" class="form-control" id="sr-type" list="svc-list" placeholder="e.g. Oil Change"><datalist id="svc-list"><option>Oil Change</option><option>Tire Rotation</option><option>Brake Job</option><option>Transmission Service</option><option>Coolant Flush</option><option>Spark Plugs</option><option>Air Filter</option><option>Water Pump</option><option>Alternator</option><option>Ball Joints</option><option>Wheel Bearings</option><option>Alignment</option><option>Differential Fluid</option><option>Transfer Case Fluid</option></datalist></div><div class="form-group"><label>Description</label><textarea class="form-control" id="sr-desc" placeholder="Details about work performed..."></textarea></div><div class="grid-2"><div class="form-group"><label>Date</label><input type="date" class="form-control" id="sr-date" value="${new Date().toISOString().split('T')[0]}"></div><div class="form-group"><label>Mileage</label><input type="number" class="form-control" id="sr-miles"></div></div><div class="form-group"><label>Performed By</label><input type="text" class="form-control" id="sr-by" placeholder="e.g. Dad, Shop"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="sr-notes"></textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveServiceRecord('${vehicleId}')">Add Record</button></div></div></div>`)}
 
-async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return toast('Service type required','error');const{error}=await db.from('service_history').insert({vehicle_id:vehicleId,service_type:t,description:val('sr-desc')||null,performed_date:val('sr-date')||null,mileage_at_service:parseInt(document.getElementById('sr-miles').value)||null,performed_by:val('sr-by')||null,notes:val('sr-notes')||null});if(error){toast(error.message,'error');return}toast('Record added!','success');invalidate('vehicles','dashboard');closeModal();invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return toast('Service type required','error');const{error}=await db.from('service_history').insert({vehicle_id:vehicleId,service_type:t,description:val('sr-desc')||null,performed_date:val('sr-date')||null,mileage_at_service:parseInt(document.getElementById('sr-miles').value)||null,performed_by:val('sr-by')||null,notes:val('sr-notes')||null});if(error){toast(error.message,'error');return}toast('Record added!','success');invalidate();closeModal();await refreshVehicleView()}
 
 async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
@@ -1837,19 +1903,19 @@ async function saveInstall(vehicleId){
 
 async function showRemovePartModal(installId){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Mark Part Removed</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Date Removed</label><input type="date" class="form-control" id="rp-date" value="${new Date().toISOString().split('T')[0]}"></div><div class="form-group"><label>Reason</label><input type="text" class="form-control" id="rp-reason" placeholder="e.g. Failed early, Upgraded, Swapped"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="markRemoved('${installId}')">Confirm</button></div></div></div>`)}
 
-async function markRemoved(installId){const{error}=await db.from('part_installations').update({removed_date:val('rp-date')||new Date().toISOString().split('T')[0],removal_reason:val('rp-reason')||null}).eq('id',installId);if(error){toast(error.message,'error');return}toast('Marked removed','success');invalidate('vehicles','dashboard');closeModal();invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function markRemoved(installId){const{error}=await db.from('part_installations').update({removed_date:val('rp-date')||new Date().toISOString().split('T')[0],removal_reason:val('rp-reason')||null}).eq('id',installId);if(error){toast(error.message,'error');return}toast('Marked removed','success');invalidate();closeModal();await refreshVehicleView()}
 
 async function showReminderModal(vehicleId){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Add Maintenance Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Title *</label><input type="text" class="form-control" id="mr-title" list="rem-list" placeholder="e.g. Oil Change"><datalist id="rem-list"><option>Oil Change</option><option>Tire Rotation</option><option>Brake Inspection</option><option>Transmission Fluid</option><option>Coolant Flush</option><option>Spark Plugs</option><option>Air Filter</option><option>Differential Fluid</option><option>Transfer Case Fluid</option><option>Ball Joint Inspection</option></datalist></div><div class="form-group"><label>Description</label><input type="text" class="form-control" id="mr-desc"></div><div class="form-group"><label>Reminder Type</label><select class="form-control" id="mr-type" onchange="toggleRF()"><option value="mileage">Mileage Based</option><option value="time">Time Based</option><option value="both">Both</option></select></div><div class="grid-2"><div class="form-group" id="mr-mg"><label>Interval (Miles)</label><input type="number" class="form-control" id="mr-miles" placeholder="e.g. 5000"></div><div class="form-group" id="mr-dg" style="display:none"><label>Interval (Days)</label><input type="number" class="form-control" id="mr-days" placeholder="e.g. 180"></div></div><div class="grid-2"><div class="form-group"><label>Last Done Date</label><input type="date" class="form-control" id="mr-ld"></div><div class="form-group"><label>Last Done Mileage</label><input type="number" class="form-control" id="mr-lm"></div></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveReminder('${vehicleId}')">Add</button></div></div></div>`)}
 
 function toggleRF(){const t=document.getElementById('mr-type').value;document.getElementById('mr-mg').style.display=(t==='mileage'||t==='both')?'block':'none';document.getElementById('mr-dg').style.display=(t==='time'||t==='both')?'block':'none'}
 
-async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate('vehicles','dashboard');closeModal();invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate();closeModal();await refreshVehicleView()}
 
 async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
 async function showSnoozeModal(reminderId,title){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Snooze Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Snoozing: <strong style="color:var(--text)">${esc(title)}</strong></div><div class="form-group"><label>Snooze Until Date</label><input type="date" class="form-control" id="sn-date"></div><div style="text-align:center;color:var(--text-dim);font-size:12px;margin:4px 0"> -  or  - </div><div class="form-group"><label>Snooze Until Mileage</label><input type="number" class="form-control" id="sn-miles"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="snoozeReminder('${reminderId}')">Snooze</button></div></div></div>`)}
 
-async function snoozeReminder(id){const sd=val('sn-date')||null,sm=parseInt(document.getElementById('sn-miles').value)||null;if(!sd&&!sm)return toast('Enter date or mileage','error');await db.from('maintenance_reminders').update({snoozed_until_date:sd,snoozed_until_mileage:sm}).eq('id',id);toast('Snoozed!','success');invalidate('vehicles','dashboard');closeModal();invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function snoozeReminder(id){const sd=val('sn-date')||null,sm=parseInt(document.getElementById('sn-miles').value)||null;if(!sd&&!sm)return toast('Enter date or mileage','error');await db.from('maintenance_reminders').update({snoozed_until_date:sd,snoozed_until_mileage:sm}).eq('id',id);toast('Snoozed!','success');invalidate();closeModal();await refreshVehicleView()}
 
 async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
