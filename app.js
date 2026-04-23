@@ -554,7 +554,7 @@ function renderPartsList(el){
     </div>`;
   }catch(err){
     console.error('renderPartsList error:',err);
-    el.innerHTML='<div style="padding:40px;color:var(--danger)">Error rendering parts: '+err.message+'<br><button class="btn btn-secondary btn-sm" onclick="location.reload()" style="margin-top:10px">Reload</button></div>';
+    el.innerHTML='<div style="padding:40px;color:var(--danger)">Error  parts: '+err.message+'<br><button class="btn btn-secondary btn-sm" onclick="location.reload()" style="margin-top:10px">Reload</button></div>';
   }
 }
 
@@ -704,8 +704,8 @@ async function renderPartProfile(arg){
   html += '<div class="ms-contact-title" style="display:flex;justify-content:space-between;align-items:center">Quick Links';
   html += '<button class="btn btn-ghost btn-sm" onclick="showCatalogEditModal(\''+cp.id+'\')" title="Edit this part type" style="padding:2px 6px">✏️</button>';
   html += '</div>';
-  html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.youtube.com/results?search_query='+youtubeQ+'\',\'_blank\')">▶️ YouTube Guide</button>';
-  html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.amazon.com/s?k='+amazonQ+'\',\'_blank\')">🛒 Amazon</button>';
+  html += '<button type="button" class="ms-contact-btn" onclick="window.open(\'https://www.youtube.com/results?search_query='+youtubeQ+'\',\'_blank\')">▶️ YouTube Guide</button>';
+  html += '<button type="button" class="ms-contact-btn" onclick="window.open(\'https://www.amazon.com/s?k='+amazonQ+'\',\'_blank\')">🛒 Amazon</button>';
   html += '<button class="ms-contact-btn" onclick="openRockAuto(\''+cp.cat+'\',\''+cp.fits+'\')">🔩 RockAuto</button>';
   if(topInv?.shop_url) html += '<button class="ms-contact-btn" onclick="window.open(\''+topInv.shop_url+'\',\'_blank\')">🔗 Shop Link</button>';
   html += '</div>';
