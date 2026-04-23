@@ -2389,3 +2389,9 @@ async function deleteWishlistItem(id){
   invalidate('wishlist');
   await renderWishlist();
 }
+  //Jessie Added
+localStorage.setItem('cz_view', window.location.hash);
+var saved = localStorage.getItem('cz_view');
+if (saved) {
+  window.location.hash = saved;
+}
