@@ -364,10 +364,8 @@ async function showView(view, arg){
   // Update URL hash for bookmarkability and back/forward
   var newHash = buildHash(view, arg);
   if(window.location.hash !== newHash){
-    _navigating = true;
     window.location.hash = newHash;
-    setTimeout(function(){ _navigating = false; }, 100);
-  }
+    return; // prevents double- render
   // Highlight nav
   var navView = (view==='part-profile') ? 'parts' : (view==='vehicle-profile') ? 'vehicles' : view;
   document.querySelectorAll('.nav-item').forEach(function(n){
@@ -393,7 +391,7 @@ async function showView(view, arg){
 
 // Browser back/forward support
 window.addEventListener('hashchange', function(){
-  if(_navigating) return;
+  window.addEventListener('hashchange', function(){
   var parsed = parseHash(window.location.hash);
   showView(parsed.view, parsed.arg);
 });
