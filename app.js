@@ -248,7 +248,7 @@ async function refreshFromSupabase(showErrors){
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
       db.from('wishlist').select('*').order('created_at',{ascending:false})
-    ]), 30000);
+    ]), showErrors ? 30000 : 8000);
     if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
     var freshData = {
       catalog:     normalizeCatalog(results[0].data || []),
