@@ -7,7 +7,7 @@
   --sidebar-w:240px;
   --ku-blue:#003087; --ku-red:#CC0000;
 }
-{margin:0;padding:0;box-sizing:border-box}
+*{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
 /* AUTH */
 #auth-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);background-image:radial-gradient(circle at 20% 50%,rgba(255,215,0,.06) 0%,transparent 50%)}
