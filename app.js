@@ -28,7 +28,8 @@ var _cache = {
   inventory: null,
   vehicles:  null,
   wishlist:  null,
-  dashboard: null
+  dashboard: null,
+  reminders: null, 
 };
 var currentUser = null;
 var dbInventory = [];     // alias for _cache.inventory (legacy compat)
@@ -216,6 +217,7 @@ function applyAppData(d){
   _cache.inventory = d.inventory || [];
   _cache.vehicles  = d.vehicles  || [];
   _cache.wishlist  = d.wishlist  || [];
+  _cache.reminders = d.reminders || [];
   dbInventory = _cache.inventory;
 }
 
@@ -247,7 +249,8 @@ async function refreshFromSupabase(showErrors, timeoutMs){
       db.from('part_details').select('*'),
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
-      db.from('wishlist').select('*').order('created_at',{ascending:false})
+      db.from('wishlist').select('*').order('created_at',{ascending:false}),
+      db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true)
    ]), timeoutMs || (showErrors ? 12000 : 8000));
     if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
     var freshData = {
@@ -255,7 +258,8 @@ async function refreshFromSupabase(showErrors, timeoutMs){
       partDetails: normalizeDetails(results[1].data || []),
       inventory:   results[2].data || [],
       vehicles:    results[3].data || [],
-      wishlist:    results[4].data || []
+      wishlist:    results[4].data || [],
+      reminders:   results[5].data || []
     };
     applyAppData(freshData);
     saveToLS(freshData);
@@ -409,17 +413,17 @@ async function renderDashboard(){
   try{
     // Use cached inventory if available, only re-fetch reminders (time-sensitive)
     let inv = await fetchInventory();
-    const remRes = await withTimeout(db.from('maintenance_reminders').select('*,vehicles(year,make,model)').eq('is_active',true));
+    const remRes = {data: _cache.reminders || []};
     parts = inv;
     reminders = remRes.data||[];
     totalParts = inv.length;
-    const veh = await fetchVehicles();
+    const veh = _cache.vehicles || await fetchVehicles();
     totalVehicles = veh.length;
     // Check for vehicles with stale photos (oldest current photo > 1 year)
     var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
     var stalePhotoVehicles=[];
     try{
-      var photoRes=await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
+      var photoRes=_cache.photos ? {data:_cache.photos} : await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
       var seen={};
       (photoRes.data||[]).forEach(function(p){
         if(!seen[p.vehicle_id]&&new Date(p.uploaded_at)<oneYearAgo){
