@@ -29,7 +29,8 @@ var _cache = {
   vehicles:  null,
   wishlist:  null,
   dashboard: null,
-  reminders: null, 
+  reminders: null,
+  userProfile: null
 };
 var currentUser = null;
 var dbInventory = [];     // alias for _cache.inventory (legacy compat)
@@ -43,6 +44,8 @@ var cameraStream = null;
 var _currentPartProfile = {id:null, name:'', type:'catalog'};
 var _currentVehicleProfile = {id:null, tab:'overview'};
 var _navigating = false;   // prevents hashchange loop
+var _currentUserProfile = null;  // loaded after auth, contains role/color/etc
+var _isAdmin = false;            // true if current user has admin role
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
 function esc(s){
@@ -245,13 +248,13 @@ async function loadAllData(){
 async function refreshFromSupabase(showErrors, timeoutMs){
   try {
     var results = await withTimeout(Promise.all([
-      db.from('catalog_parts').select('id,name,category,subcategory,oem_number,aftermarket_ref,failure_rank,fits').order('failure_rank'),
+      db.from('catalog_parts').select('*').order('failure_rank'),
       db.from('part_details').select('*'),
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
       db.from('wishlist').select('*').order('created_at',{ascending:false}),
       db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true)
-   ]), timeoutMs || (showErrors ? 12000 : 8000));
+    ]), timeoutMs || (showErrors ? 12000 : 8000));
     if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
     var freshData = {
       catalog:     normalizeCatalog(results[0].data || []),
@@ -306,8 +309,23 @@ async function fetchWishlist(force){
 db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
+    // Load user profile (role, color, display name)
+    try{
+      var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
+      _currentUserProfile = profRes.data || null;
+      _isAdmin = _currentUserProfile && _currentUserProfile.role === 'admin';
+    }catch(e){ _currentUserProfile = null; _isAdmin = false; }
+    var uname = (_currentUserProfile && _currentUserProfile.username) ||
+                (currentUser.user_metadata && currentUser.user_metadata.username) ||
+                currentUser.email;
+    var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
     var display = document.getElementById('user-email-display');
-    if(display) display.textContent = (currentUser.user_metadata && currentUser.user_metadata.username) || currentUser.email;
+    if(display){
+      display.innerHTML = '<span style="color:'+ucolor+';font-weight:600">'+esc(uname)+'</span>';
+    }
+    // Show admin nav item if admin
+    var adminNav = document.getElementById('admin-nav');
+    if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
     await loadAllData();
     hideSpinner();
     var authEl = document.getElementById('auth-screen');
@@ -337,14 +355,29 @@ async function signIn(){
   var input = document.getElementById('login-username').value.trim();
   var password = document.getElementById('login-password').value;
   if(!input || !password){ toast('Please enter your username and password','error'); return; }
+
+  // If they typed an email address, use it directly
   if(input.indexOf('@') >= 0){
-  var result = await db.auth.signInWithPassword({email:input, password:password});
-  if(result.error) toast('Incorrect username or password','error');
-  return;
-}
+    var result = await db.auth.signInWithPassword({email:input, password:password});
+    if(result.error) toast('Incorrect username or password','error');
+    return;
+  }
+
+  // Username login: look up their real email from profiles table
+  // Then try signing in with that. Fall back to old @chickzone.internal format
+  // for accounts created before this change.
   var email = null;
-  try{ var pr = await db.from('profiles').select('real_email').eq('username',input).single(); if(pr.data && pr.data.real_email) email = pr.data.real_email; }catch(e){}
-  if(email){ var r1 = await db.auth.signInWithPassword({email:email, password:password}); if(!r1.error) return; }
+  try{
+    var pr = await db.from('profiles').select('real_email').eq('username', input).single();
+    if(pr.data && pr.data.real_email) email = pr.data.real_email;
+  }catch(e){}
+
+  if(email){
+    var r1 = await db.auth.signInWithPassword({email:email, password:password});
+    if(!r1.error) return;
+  }
+
+  // Fall back to old internal email format (for existing accounts)
   var r2 = await db.auth.signInWithPassword({email:input+'@chickzone.internal', password:password});
   if(r2.error) toast('Incorrect username or password','error');
 }
@@ -355,13 +388,14 @@ async function signUp(){
   if(!username || !email || !password) return toast('Please fill all fields','error');
   if(username.length < 3) return toast('Username must be at least 3 characters','error');
   if(email.indexOf('@') < 0) return toast('Please enter a valid email','error');
+  // Use real email for Supabase auth (no fake internal emails)
   var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
   if(r.error){ toast(r.error.message,'error'); return; }
   if(r.data && r.data.user){
     await db.from('profiles').upsert({id:r.data.user.id, username:username, full_name:username, real_email:email}).catch(function(){
       return db.from('profiles').upsert({id:r.data.user.id, full_name:username});
-   });
-}
+    });
+  }
   toast('Account created! Sign in with your username.','success');
   switchAuthTab('login');
   document.getElementById('login-username').value = username;
@@ -374,8 +408,9 @@ async function showView(view, arg){
   // Update URL hash for bookmarkability and back/forward
   var newHash = buildHash(view, arg);
   if(window.location.hash !== newHash){
+    _navigating = true;
     window.location.hash = newHash;
-    return; // prevents double- render
+    setTimeout(function(){ _navigating = false; }, 100);
   }
   // Highlight nav
   var navView = (view==='part-profile') ? 'parts' : (view==='vehicle-profile') ? 'vehicles' : view;
@@ -394,6 +429,8 @@ async function showView(view, arg){
     else if(view === 'vehicles') await renderVehicles();
     else if(view === 'vehicle-profile') await renderVehicleProfile(arg);
     else if(view === 'wishlist') await renderWishlist();
+    else if(view === 'users') _isAdmin ? await renderUsersPanel() : await renderUserProfile();
+    else if(view === 'profile') await renderUserProfile();
   } catch(err){
     console.error('showView error for ' + view + ':', err);
     if(el) el.innerHTML = errBox(err.message);
@@ -402,9 +439,290 @@ async function showView(view, arg){
 
 // Browser back/forward support
 window.addEventListener('hashchange', function(){
+  if(_navigating) return;
+  if(!currentUser) return; // ignore hash changes before auth completes
   var parsed = parseHash(window.location.hash);
   showView(parsed.view, parsed.arg);
 });
+// ─── USER PROFILE ────────────────────────────────────────────────────────────
+
+async function renderUserProfile(){
+  var el = document.getElementById('view-users');
+  if(!el) return;
+  el.innerHTML = viewLoading('Loading profile...');
+  try{
+    var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
+    _currentUserProfile = profRes.data || {};
+    _isAdmin = _currentUserProfile.role === 'admin';
+  }catch(e){}
+  var p = _currentUserProfile || {};
+  var uname = p.username || (currentUser.user_metadata && currentUser.user_metadata.username) || '';
+  var ucolor = p.user_color || '#FFD700';
+  var dname = p.display_name || uname;
+  var role = p.role || 'owner';
+  var resetReq = p.reset_requested;
+
+  var html = '<div class="page-header"><div style="text-align:center;flex:1">';
+  html += '<div class="page-title" style="font-size:42px">My Profile</div>';
+  html += '<div class="page-subtitle" style="font-size:12px">'+esc(uname)+'</div></div></div>';
+
+  html += '<div style="max-width:500px;margin:0 auto">';
+
+  // Profile card
+  html += '<div class="card" style="margin-bottom:20px">';
+  html += '<div style="text-align:center;margin-bottom:20px">';
+  html += '<div style="width:80px;height:80px;border-radius:50%;background:'+ucolor+';margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:32px;font-family:Bebas Neue,sans-serif;color:#000">'+esc(uname.charAt(0).toUpperCase())+'</div>';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:700;color:'+ucolor+'">'+esc(dname)+'</div>';
+  html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(role)+'</div>';
+  html += '</div>';
+
+  html += '<div class="form-group"><label>Display Name</label>';
+  html += '<input type="text" class="form-control" id="up-dname" value="'+esc(dname)+'" placeholder="How your name appears on comments"></div>';
+
+  html += '<div class="form-group"><label>Username Color</label>';
+  html += '<div style="display:flex;align-items:center;gap:12px">';
+  html += '<input type="color" id="up-color" value="'+ucolor+'" style="width:50px;height:36px;border:none;background:none;cursor:pointer;border-radius:6px">';
+  html += '<div id="up-color-preview" style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:700;color:'+ucolor+'">'+esc(dname)+' (preview)</div>';
+  html += '</div></div>';
+
+  html += '<script>document.getElementById("up-color").addEventListener("input",function(){var c=this.value;document.getElementById("up-color-preview").style.color=c;});<\/script>';
+
+  html += '<div style="display:flex;gap:8px;margin-top:16px">';
+  html += '<button class="btn btn-primary" onclick="saveUserProfile()">Save Changes</button>';
+  if(role==='tester' && !resetReq){
+    html += '<button class="btn btn-secondary" onclick="requestReTest()" style="margin-left:auto">Request Re-Test</button>';
+  }
+  if(role==='tester' && resetReq){
+    html += '<div style="margin-left:auto;font-size:12px;color:var(--warning);align-self:center">⏳ Reset requested — waiting for admin</div>';
+  }
+  html += '</div></div>';
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function saveUserProfile(){
+  var dname = val('up-dname');
+  var color = document.getElementById('up-color') ? document.getElementById('up-color').value : '#FFD700';
+  if(!dname) return toast('Display name cannot be empty','error');
+  var{error} = await db.from('profiles').update({display_name:dname, user_color:color}).eq('id', currentUser.id);
+  if(error){ toast(error.message,'error'); return; }
+  _currentUserProfile = Object.assign({}, _currentUserProfile, {display_name:dname, user_color:color});
+  // Update sidebar display
+  var display = document.getElementById('user-email-display');
+  if(display) display.innerHTML = '<span style="color:'+color+';font-weight:600">'+esc(_currentUserProfile.username||dname)+'</span>';
+  toast('Profile saved!','success');
+  await renderUserProfile();
+}
+
+async function requestReTest(){
+  if(!confirm('This will ask the admin to reset your test data. Continue?')) return;
+  await db.from('profiles').update({reset_requested:true}).eq('id', currentUser.id);
+  toast('Reset requested! Admin will clear your test data soon.','success');
+  await renderUserProfile();
+}
+
+// ─── ADMIN: USERS PANEL ──────────────────────────────────────────────────────
+
+async function renderUsersPanel(){
+  var el = document.getElementById('view-users');
+  if(!el) return;
+  if(!_isAdmin){ el.innerHTML = errBox('Access denied'); return; }
+  el.innerHTML = viewLoading('Loading users...');
+  try{
+    var usersRes = await db.from('profiles').select('*').order('created_at');
+    var users = usersRes.data || [];
+    var vehicles = _cache.vehicles || await fetchVehicles();
+
+    var html = '<div class="page-header"><div style="text-align:center;flex:1">';
+    html += '<div class="page-title" style="font-size:42px">Users</div>';
+    html += '<div class="page-subtitle" style="font-size:12px">Manage access and roles</div></div></div>';
+
+    users.forEach(function(u){
+      var ucolor = u.user_color || '#FFD700';
+      var isMe = u.id === currentUser.id;
+      html += '<div class="card" style="margin-bottom:12px">';
+      html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">';
+      html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.username||'?').charAt(0).toUpperCase())+'</div>';
+      html += '<div style="flex:1">';
+      html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
+      html += '<div style="font-size:12px;color:var(--text-muted)">'+esc(u.real_email||u.id.substring(0,8)+'...')+'</div>';
+      html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
+      if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
+      html += '</div>';
+      if(!isMe){
+        html += '<div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">';
+        // Role selector
+        html += '<select class="form-control" style="width:auto;font-size:12px" onchange="setUserRole(\''+u.id+'\',this.value)">';
+        ['admin','owner','guest','tester'].forEach(function(r){
+          html += '<option value="'+r+'"'+(u.role===r?' selected':'')+'>'+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';
+        });
+        html += '</select>';
+        // Vehicle assignment (for owner)
+        if(u.role==='owner'){
+          html += '<select class="form-control" style="width:auto;font-size:12px" onchange="setUserVehicle(\''+u.id+'\',this.value)">';
+          html += '<option value="">No vehicle assigned</option>';
+          vehicles.forEach(function(v){
+            html += '<option value="'+v.id+'"'+(u.assigned_vehicle_id===v.id?' selected':'')+'>'+esc(getVehicleDisplayName(v))+'</option>';
+          });
+          html += '</select>';
+        }
+        // Reset button (for tester)
+        if(u.role==='tester'){
+          html += '<button class="btn btn-danger btn-sm" onclick="adminResetTester(\''+u.id+'\',\''+esc(u.username||'this user')+'\')">🗑️ Reset Data</button>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+      // Admin can hard-delete install history
+      if(_isAdmin && u.id !== currentUser.id){
+        html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
+        html += '<button class="btn btn-danger btn-sm" onclick="adminDeleteInstalls(\''+u.id+'\',\''+esc(u.username||'this user')+'\')" style="font-size:11px">🗑️ Delete ALL install history (permanent)</button>';
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+
+    el.innerHTML = html;
+  }catch(err){
+    el.innerHTML = errBox(err.message);
+  }
+}
+
+async function setUserRole(userId, role){
+  var{error} = await db.from('profiles').update({role:role}).eq('id', userId);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Role updated','success');
+  await renderUsersPanel();
+}
+
+async function setUserVehicle(userId, vehicleId){
+  var{error} = await db.from('profiles').update({assigned_vehicle_id:vehicleId||null}).eq('id', userId);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Vehicle assigned','success');
+}
+
+async function adminResetTester(userId, username){
+  if(!confirm('PERMANENT: Delete all data created by '+username+'? This cannot be undone.')) return;
+  try{
+    var{error} = await db.rpc('reset_tester_data', {tester_id: userId});
+    if(error) throw new Error(error.message);
+    toast('Tester data reset!','success');
+    invalidate();
+    await renderUsersPanel();
+  }catch(e){ toast('Reset failed: '+e.message,'error'); }
+}
+
+async function adminDeleteInstalls(userId, username){
+  if(!confirm('PERMANENT: Delete ALL installation history for '+username+'? This cannot be undone.')) return;
+  try{
+    // Delete part_installations for parts created by or attributed to this user
+    // Since we don't have user_id on part_installations, delete by vehicle ownership
+    var vRes = await db.from('vehicles').select('id').eq('created_by', userId);
+    if(vRes.data && vRes.data.length){
+      var vIds = vRes.data.map(function(v){return v.id;});
+      await db.from('part_installations').delete().in('vehicle_id', vIds);
+    }
+    // Also delete any parts they created that have installations
+    var pRes = await db.from('parts').select('id').eq('created_by', userId);
+    if(pRes.data && pRes.data.length){
+      var pIds = pRes.data.map(function(p){return p.id;});
+      await db.from('part_installations').delete().in('part_id', pIds);
+    }
+    toast('Install history deleted','success');
+    invalidate();
+    await renderUsersPanel();
+  }catch(e){ toast('Delete failed: '+e.message,'error'); }
+}
+
+// ─── COMMENTS SYSTEM ─────────────────────────────────────────────────────────
+
+async function renderComments(recordType, recordId, containerId){
+  var container = document.getElementById(containerId);
+  if(!container) return;
+  container.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">Loading comments...</div>';
+  try{
+    var res = await db.from('comments').select('*').eq('record_type',recordType).eq('record_id',String(recordId)).order('created_at',{ascending:true});
+    var comments = res.data || [];
+    var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+    var uname = (_currentUserProfile && _currentUserProfile.username) || 'Me';
+    var html = '';
+    if(comments.length === 0){
+      html += '<div style="font-size:12px;color:var(--text-dim);padding:8px 0">No comments yet</div>';
+    }
+    comments.forEach(function(c){
+      var isMe = c.user_id === currentUser.id;
+      var ccolor = c.user_color || '#FFD700';
+      html += '<div id="comment-'+c.id+'" style="padding:8px 0;border-bottom:1px solid var(--border)">';
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">';
+      html += '<span style="font-weight:600;font-size:12px;color:'+ccolor+'">'+esc(c.username||'Unknown')+'</span>';
+      html += '<span style="font-size:11px;color:var(--text-dim)">'+fmtDate(c.created_at)+'</span>';
+      if(isMe || _isAdmin){
+        html += '<button onclick="editComment(\''+c.id+'\',\''+containerId+'\',\''+recordType+'\',\''+String(recordId)+'\')" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;margin-left:auto">✏️</button>';
+        html += '<button onclick="deleteComment(\''+c.id+'\',\''+containerId+'\',\''+recordType+'\',\''+String(recordId)+'\')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:11px">🗑️</button>';
+      }
+      html += '</div>';
+      html += '<div style="font-size:13px;color:var(--text);white-space:pre-wrap">'+esc(c.body)+'</div>';
+      html += '</div>';
+    });
+    // Add comment input
+    html += '<div style="margin-top:10px;display:flex;gap:6px">';
+    html += '<input type="text" id="new-comment-'+containerId+'" class="form-control" placeholder="Add a comment... (Enter to submit)" style="flex:1;font-size:13px" onkeydown="if(event.key===\'Enter\'){event.preventDefault();submitComment(\''+recordType+'\',\''+String(recordId)+'\',\''+containerId+'\')}">';
+    html += '<button class="btn btn-secondary btn-sm" onclick="submitComment(\''+recordType+'\',\''+String(recordId)+'\',\''+containerId+'\')">Post</button>';
+    html += '</div>';
+    container.innerHTML = html;
+  }catch(e){
+    container.innerHTML = '<div style="font-size:12px;color:var(--danger)">Could not load comments</div>';
+  }
+}
+
+async function submitComment(recordType, recordId, containerId){
+  var input = document.getElementById('new-comment-'+containerId);
+  if(!input || !input.value.trim()) return;
+  var body = input.value.trim();
+  var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+  var uname = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'Unknown';
+  var{error} = await db.from('comments').insert({
+    user_id: currentUser.id,
+    username: uname,
+    user_color: ucolor,
+    record_type: recordType,
+    record_id: String(recordId),
+    body: body
+  });
+  if(error){ toast(error.message,'error'); return; }
+  input.value = '';
+  await renderComments(recordType, recordId, containerId);
+}
+
+async function deleteComment(commentId, containerId, recordType, recordId){
+  if(!confirm('Delete this comment?')) return;
+  await db.from('comments').delete().eq('id', commentId);
+  await renderComments(recordType, recordId, containerId);
+}
+
+async function editComment(commentId, containerId, recordType, recordId){
+  var bodyEl = document.querySelector('#comment-'+commentId+' div[style*="pre-wrap"]');
+  if(!bodyEl) return;
+  var current = bodyEl.textContent;
+  var newBody = prompt('Edit comment:', current);
+  if(!newBody || newBody.trim() === current) return;
+  await db.from('comments').update({body:newBody.trim(), updated_at:new Date().toISOString()}).eq('id', commentId);
+  await renderComments(recordType, recordId, containerId);
+}
+
+// ─── TESTER DASHBOARD BUTTON ─────────────────────────────────────────────────
+
+function maybeShowTesterBanner(){
+  var role = _currentUserProfile && _currentUserProfile.role;
+  if(role !== 'tester') return '';
+  var resetReq = _currentUserProfile && _currentUserProfile.reset_requested;
+  if(resetReq){
+    return '<div class="alert alert-warning" style="margin-bottom:16px">⏳ <strong>Reset requested.</strong> Admin will clear your test data soon.</div>';
+  }
+  return '<div class="alert" style="background:rgba(100,100,200,.1);border-color:rgba(100,100,200,.3);margin-bottom:16px">🧪 <strong>Tester mode.</strong> <button class="btn btn-secondary btn-sm" onclick="requestReTest()" style="margin-left:8px">Request Data Reset</button></div>';
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
   const el=document.getElementById('view-dashboard');
@@ -413,17 +731,17 @@ async function renderDashboard(){
   try{
     // Use cached inventory if available, only re-fetch reminders (time-sensitive)
     let inv = await fetchInventory();
-    const remRes = {data: _cache.reminders || []};
+    // Use cached reminders — refreshed in background by refreshFromSupabase
+    reminders = _cache.reminders || [];
     parts = inv;
-    reminders = remRes.data||[];
     totalParts = inv.length;
-    const veh = _cache.vehicles || await fetchVehicles();
+    const veh = await fetchVehicles();
     totalVehicles = veh.length;
     // Check for vehicles with stale photos (oldest current photo > 1 year)
     var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
     var stalePhotoVehicles=[];
     try{
-      var photoRes=_cache.photos ? {data:_cache.photos} : await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
+      var photoRes=await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
       var seen={};
       (photoRes.data||[]).forEach(function(p){
         if(!seen[p.vehicle_id]&&new Date(p.uploaded_at)<oneYearAgo){
@@ -437,7 +755,7 @@ async function renderDashboard(){
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
-  el.innerHTML=`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
+  el.innerHTML=maybeShowTesterBanner()+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
   <div class="stat-grid">
     <div class="stat-card"><div class="stat-label">Parts in Stock</div><div class="stat-value">${totalParts||0}</div><div style="font-size:12px;color:var(--text-muted)">Inventory records</div></div>
     <div class="stat-card"><div class="stat-label">Vehicles</div><div class="stat-value">${totalVehicles||0}</div><div style="font-size:12px;color:var(--text-muted)">Registered</div></div>
@@ -454,7 +772,6 @@ async function renderDashboard(){
 // ═══════════════════════════════════════════════════════════════════════════════
 async function renderPartsPage(){
   var el=document.getElementById('view-parts');
-  if(!el) return;
   if(!el){ console.error('view-parts element missing'); return; }
   // Only show loading spinner if we have nothing cached yet
   if(!_cache.inventory) el.innerHTML=viewLoading('Loading parts...');
@@ -564,7 +881,7 @@ function renderPartsList(el){
     </div>`;
   }catch(err){
     console.error('renderPartsList error:',err);
-    el.innerHTML='<div style="padding:40px;color:var(--danger)">Error  parts: '+err.message+'<br><button class="btn btn-secondary btn-sm" onclick="location.reload()" style="margin-top:10px">Reload</button></div>';
+    el.innerHTML='<div style="padding:40px;color:var(--danger)">Error rendering parts: '+err.message+'<br><button class="btn btn-secondary btn-sm" onclick="location.reload()" style="margin-top:10px">Reload</button></div>';
   }
 }
 
@@ -613,12 +930,6 @@ async function renderPartProfile(arg){
   let cp=null, inv=[];
   if(type==='catalog'){
     cp=_catalog.find(p=>p.id===id);
-    if(cp && !cp.desc){
-      try{
-        var dr=await db.from('catalog_parts').select('description').eq('id',id).single();
-        if(dr.data) cp.desc=dr.data.description||'';
-      }catch(e){}
-    }
     inv=dbInventory.filter(p=>p.catalog_part_id===id);
   } else {
     const p=dbInventory.find(p=>p.id===id);
@@ -720,8 +1031,8 @@ async function renderPartProfile(arg){
   html += '<div class="ms-contact-title" style="display:flex;justify-content:space-between;align-items:center">Quick Links';
   html += '<button class="btn btn-ghost btn-sm" onclick="showCatalogEditModal(\''+cp.id+'\')" title="Edit this part type" style="padding:2px 6px">✏️</button>';
   html += '</div>';
-  html += '<button type="button" class="ms-contact-btn" onclick="window.open(\'https://www.youtube.com/results?search_query='+youtubeQ+'\',\'_blank\')">▶️ YouTube Guide</button>';
-  html += '<button type="button" class="ms-contact-btn" onclick="window.open(\'https://www.amazon.com/s?k='+amazonQ+'\',\'_blank\')">🛒 Amazon</button>';
+  html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.youtube.com/results?search_query='+youtubeQ+'\',\'_blank\')">▶️ YouTube Guide</button>';
+  html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.amazon.com/s?k='+amazonQ+'\',\'_blank\')">🛒 Amazon</button>';
   html += '<button class="ms-contact-btn" onclick="openRockAuto(\''+cp.cat+'\',\''+cp.fits+'\')">🔩 RockAuto</button>';
   if(topInv?.shop_url) html += '<button class="ms-contact-btn" onclick="window.open(\''+topInv.shop_url+'\',\'_blank\')">🔗 Shop Link</button>';
   html += '</div>';
@@ -841,7 +1152,13 @@ async function renderPartProfile(arg){
   html += '</div>'; // end right
   html += '</div>'; // end grid
 
+  // Comments section
+  html += '<div class="ms-box" style="margin-top:20px"><div class="ms-box-title">💬 Comments</div>';
+  html += '<div id="comments-part-'+id+'"></div></div>';
+
   el.innerHTML = html;
+  // Load comments after render
+  renderComments('part', id, 'comments-part-'+id);
 }
 
 // Get display name for a vehicle from notes field (Driver: X format)
@@ -962,13 +1279,7 @@ async function saveCatalogEdit(cpId){
   cp.afm=document.getElementById('ce-afm').value.trim();
   const tools=document.getElementById('ce-tools').value.split('\n').map(t=>t.trim()).filter(Boolean);
   const hardware=document.getElementById('ce-hardware').value.split('\n').map(h=>h.trim()).filter(Boolean);
-  // Call a setter function instead of assigning to a function call - 
-_partDetails[cpId] = {
-  tools: tools,
-  hardware: hardware,
-  time: document.getElementById('ce-time').value.trim(),
-  tip: document.getElementById('ce-tip').value.trim()
-};
+  _partDetails[cpId]={tools:tools,hardware:hardware,time:document.getElementById('ce-time').value.trim(),tip:document.getElementById('ce-tip').value.trim()};
   toast('Part info updated! (Changes last until page refresh - database persistence coming later)','success');
   closeModal();
   await renderPartProfile({id:cpId, type:'catalog'});
@@ -1722,6 +2033,10 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
     }
   }
 
+  // Comments section
+  html += '<div class="card" style="margin-top:16px"><div class="stat-label" style="margin-bottom:10px">💬 Comments</div>';
+  html += '<div id="comments-vehicle-'+v.id+'"></div></div>';
+  // Note: renderComments called after full profile renders
   return html;
 }
 
@@ -2354,60 +2669,60 @@ function toggleFoundEditMode(){
 
 // Save the found item: add to parts inventory, then delete wishlist entry
 async function saveFoundWishlistItem(){
-   const item = window._foundWishlistItem;
-   const catalogPart = window._foundCatalogPart;
-   const wishlistId = window._foundWishlistId;
-   if(!item){ toast('Missing wishlist context','error'); return; }
+  const item = window._foundWishlistItem;
+  const catalogPart = window._foundCatalogPart;
+  const wishlistId = window._foundWishlistId;
+  if(!item){ toast('Missing wishlist context','error'); return; }
 
-   const cond = val('fd-cond');
-   if(!cond){ toast('Please pick a condition','error'); return; }
-   const qty = parseInt(document.getElementById('fd-qty').value) || 1;
+  const cond = val('fd-cond');
+  if(!cond){ toast('Please pick a condition','error'); return; }
+  const qty = parseInt(document.getElementById('fd-qty').value) || 1;
 
-   // Use edited values if the user toggled edit mode (input fields exist either way)
-   const finalName = val('fd-name') || item.name;
-   const finalNum = val('fd-num') || item.part_number || catalogPart?.oem || null;
-   const finalDest = val('fd-dest') || item.compatible_vehicles || null;
+  // Use edited values if the user toggled edit mode (input fields exist either way)
+  const finalName = val('fd-name') || item.name;
+  const finalNum = val('fd-num') || item.part_number || catalogPart?.oem || null;
+  const finalDest = val('fd-dest') || item.compatible_vehicles || null;
 
-   const data = {
-     created_by: currentUser.id,
-     name: finalName,
-     part_number: finalNum,
-     catalog_part_id: catalogPart?.id || null,
-     oem_part_number: catalogPart?.afm || null,
-     condition: cond,
-     quantity: qty,
-     source: val('fd-src') || null,
-     date_acquired: val('fd-date') || null,
-     price_paid: parseFloat(val('fd-price')) || null,
-     sourced_from_vehicle: finalDest,
-     notes: val('fd-notes') || null,
-     low_stock_threshold: null,
-     compatible_vehicles: catalogPart && catalogPart.fits==='all' ? "Nathan's 2004 Denali, Cammy's 2005 Denali, Jessie's 2004 Escalade" : (finalDest || null)
-   };
+  const data = {
+    created_by: currentUser.id,
+    name: finalName,
+    part_number: finalNum,
+    catalog_part_id: catalogPart?.id || null,
+    oem_part_number: catalogPart?.afm || null,
+    condition: cond,
+    quantity: qty,
+    source: val('fd-src') || null,
+    date_acquired: val('fd-date') || null,
+    price_paid: parseFloat(val('fd-price')) || null,
+    sourced_from_vehicle: finalDest,
+    notes: val('fd-notes') || null,
+    low_stock_threshold: null,
+    compatible_vehicles: catalogPart && catalogPart.fits==='all' ? "Nathan's 2004 Denali, Cammy's 2005 Denali, Jessie's 2004 Escalade" : (finalDest || null)
+  };
 
-   const {error:insErr} = await db.from('parts').insert(data);
-   if(insErr){ toast(insErr.message,'error'); return; }
+  const {error:insErr} = await db.from('parts').insert(data);
+  if(insErr){ toast(insErr.message,'error'); return; }
 
-   // Remove from wishlist
-   await db.from('wishlist').delete().eq('id',wishlistId);
+  // Remove from wishlist
+  await db.from('wishlist').delete().eq('id',wishlistId);
 
-   toast('Added to inventory & removed from wishlist!','success');
-   invalidate('inventory','wishlist','dashboard');
-   closeModal();
-   await renderWishlist();
+  toast('Added to inventory & removed from wishlist!','success');
+  invalidate('inventory','wishlist','dashboard');
+  closeModal();
+  await renderWishlist();
 }
 
+
 async function markWishlistFound(id){
-   await db.from('wishlist').update({found:true}).eq('id',id);
-   toast('Marked as found!','success');
-   await renderWishlist();
+  await db.from('wishlist').update({found:true}).eq('id',id);
+  toast('Marked as found!','success');
+  await renderWishlist();
 }
 
 async function deleteWishlistItem(id){
-   if(!confirm('Remove from wishlist?')) return;
-   await db.from('wishlist').delete().eq('id',id);
-   toast('Removed','success');
-   invalidate('wishlist');
-   await renderWishlist();
-
+  if(!confirm('Remove from wishlist?')) return;
+  await db.from('wishlist').delete().eq('id',id);
+  toast('Removed','success');
+  invalidate('wishlist');
+  await renderWishlist();
 }
