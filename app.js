@@ -333,9 +333,16 @@ async function signIn(){
   var input = document.getElementById('login-username').value.trim();
   var password = document.getElementById('login-password').value;
   if(!input || !password){ toast('Please enter your username and password','error'); return; }
-  var email = input.indexOf('@') >= 0 ? input : (input + '@chickzone.internal');
-  var result = await db.auth.signInWithPassword({email:email, password:password});
-  if(result.error) toast('Incorrect credentials','error');
+  if(input.indexOf('@') >= 0){
+  var result = await db.auth.signInWithPassword({email:input, password:password});
+  if(result.error) toast('Incorrect username or password','error');
+  return;
+}
+  var email = null;
+  try{ var pr = await db.from('profiles').select('real_email').eq('username',input).single(); if(pr.data && pr.data.real_email) email = pr.data.real_email; }catch(e){}
+  if(email){ var r1 = await db.auth.signInWithPassword({email:email, password:password}); if(!r1.error) return; }
+  var r2 = await db.auth.signInWithPassword({email:input+'@chickzone.internal', password:password});
+  if(r2.error) toast('Incorrect username or password','error');
 }
 async function signUp(){
   var username = document.getElementById('reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
@@ -344,14 +351,13 @@ async function signUp(){
   if(!username || !email || !password) return toast('Please fill all fields','error');
   if(username.length < 3) return toast('Username must be at least 3 characters','error');
   if(email.indexOf('@') < 0) return toast('Please enter a valid email','error');
-  var internalEmail = username + '@chickzone.internal';
   var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
   if(r.error){ toast(r.error.message,'error'); return; }
   if(r.data && r.data.user){
     await db.from('profiles').upsert({id:r.data.user.id, username:username, full_name:username, real_email:email}).catch(function(){
       return db.from('profiles').upsert({id:r.data.user.id, full_name:username});
-    });
-  }
+   });
+}
   toast('Account created! Sign in with your username.','success');
   switchAuthTab('login');
   document.getElementById('login-username').value = username;
@@ -947,11 +953,11 @@ async function saveCatalogEdit(cpId){
   const tools=document.getElementById('ce-tools').value.split('\n').map(t=>t.trim()).filter(Boolean);
   const hardware=document.getElementById('ce-hardware').value.split('\n').map(h=>h.trim()).filter(Boolean);
   // Call a setter function instead of assigning to a function call - 
-  getPartDetail[cpId] = {
-    tools,
-    hardware,
-    time: document.getElementById('ce-time').value.trim(),
-    tip: document.getElementById('ce-tip').value.trim()
+_partDetails[cpId] = {
+  tools: tools,
+  hardware: hardware,
+  time: document.getElementById('ce-time').value.trim(),
+  tip: document.getElementById('ce-tip').value.trim()
 };
   toast('Part info updated! (Changes last until page refresh - database persistence coming later)','success');
   closeModal();
