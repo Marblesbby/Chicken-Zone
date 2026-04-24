@@ -243,7 +243,7 @@ async function loadAllData(){
 async function refreshFromSupabase(showErrors, timeoutMs){
   try {
     var results = await withTimeout(Promise.all([
-      db.from('catalog_parts').select('*').order('failure_rank'),
+      db.from('catalog_parts').select('id,name,category,subcategory,oem_number,aftermarket_ref,failure_rank,fits').order('failure_rank'),
       db.from('part_details').select('*'),
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
@@ -609,6 +609,12 @@ async function renderPartProfile(arg){
   let cp=null, inv=[];
   if(type==='catalog'){
     cp=_catalog.find(p=>p.id===id);
+    if(cp && !cp.desc){
+      try{
+        var dr=await db.from('catalog_parts').select('description').eq('id',id).single();
+        if(dr.data) cp.desc=dr.data.description||'';
+      }catch(e){}
+    }
     inv=dbInventory.filter(p=>p.catalog_part_id===id);
   } else {
     const p=dbInventory.find(p=>p.id===id);
