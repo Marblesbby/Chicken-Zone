@@ -237,10 +237,10 @@ async function loadAllData(){
   }
   // Step 2: Full load from Supabase
   showSpinner('Waking up the garage...');
-  await refreshFromSupabase(true);
+  await refreshFromSupabase(true, 12000);
 }
 
-async function refreshFromSupabase(showErrors){
+async function refreshFromSupabase(showErrors, timeoutMs){
   try {
     var results = await withTimeout(Promise.all([
       db.from('catalog_parts').select('*').order('failure_rank'),
@@ -248,7 +248,7 @@ async function refreshFromSupabase(showErrors){
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
       db.from('wishlist').select('*').order('created_at',{ascending:false})
-    ]), showErrors ? 30000 : 8000);
+   ]), timeoutMs || (showErrors ? 12000 : 8000));
     if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
     var freshData = {
       catalog:     normalizeCatalog(results[0].data || []),
