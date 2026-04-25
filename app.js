@@ -349,54 +349,62 @@ var _appInitialized = false;
 db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
-    // Show username immediately from metadata (no DB round trip needed)
-    var uname = (currentUser.user_metadata && currentUser.user_metadata.username) || currentUser.email;
-    var display = document.getElementById('user-email-display');
-    if(display) display.innerHTML = '<span style="font-weight:600">' + esc(uname) + '</span>';
-    try {
-      if(!_appInitialized){
-        showSpinner('Opening the garage...');
-        // Load catalog — fast, always needed, load first
-        await loadCatalog();
-      // Load user profile in parallel with first data fetch
-      var profRes = await withTimeout(db.from('profiles').select('*').eq('id', currentUser.id).single(), 6000);
-      _currentUserProfile = profRes.data || null;
-      _isAdmin = _currentUserProfile && _currentUserProfile.role === 'admin';
-      // Update display with profile color
-      if(_currentUserProfile){
-        var ucolor = _currentUserProfile.user_color || '#FFD700';
-        var dname = _currentUserProfile.display_name || _currentUserProfile.username || uname;
-        var emoji2 = _currentUserProfile.avatar_emoji || '🐇';
-        if(display) display.innerHTML = emoji2 + ' <span style="color:' + ucolor + ';font-weight:600">' + esc(dname) + '</span>';
-      }
-      var adminNav = document.getElementById('admin-nav');
-      if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
-      _appInitialized = true;
-      } // end if(!_appInitialized)
-    } catch(e){
-      console.warn('Startup error:', e);
-      _currentUserProfile = null;
-      _isAdmin = false;
+    if(_appInitialized){
+      // Subsequent auth events (token refresh etc) - just update user state silently
+      if(_currentUserProfile) return;
+      // If profile somehow missing, fetch it quietly
+      try{
+        var rp=await db.from('profiles').select('*').eq('id',currentUser.id).single();
+        _currentUserProfile=rp.data||null;
+        _isAdmin=_currentUserProfile&&_currentUserProfile.role==='admin';
+      }catch(e){}
+      return;
     }
+    // ── FIRST TIME ONLY ────────────────────────────────────────────────────
+    // Show username immediately from metadata
+    var uname=(currentUser.user_metadata&&currentUser.user_metadata.username)||currentUser.email;
+    var display=document.getElementById('user-email-display');
+    if(display) display.innerHTML='<span style="font-weight:600">'+esc(uname)+'</span>';
+    try{
+      showSpinner('Opening the garage...');
+      await loadCatalog();
+      var profRes=await withTimeout(db.from('profiles').select('*').eq('id',currentUser.id).single(),6000);
+      _currentUserProfile=profRes.data||null;
+      _isAdmin=_currentUserProfile&&_currentUserProfile.role==='admin';
+      if(_currentUserProfile){
+        var ucolor=_currentUserProfile.user_color||'#FFD700';
+        var dname=_currentUserProfile.display_name||_currentUserProfile.username||uname;
+        var emoji2=_currentUserProfile.avatar_emoji||'🐇';
+        if(display) display.innerHTML=emoji2+' <span style="color:'+ucolor+';font-weight:600">'+esc(dname)+'</span>';
+      }
+      var adminNav=document.getElementById('admin-nav');
+      if(adminNav) adminNav.style.display=_isAdmin?'block':'none';
+    }catch(e){
+      console.warn('Startup error:',e);
+      _currentUserProfile=null;
+      _isAdmin=false;
+    }
+    _appInitialized=true;
     hideSpinner();
-    var authEl = document.getElementById('auth-screen');
-    var appEl  = document.getElementById('app');
-    if(authEl) authEl.style.display = 'none';
-    if(appEl)  appEl.style.display  = 'flex';
-    // Restore from URL hash
-    var parsed = parseHash(window.location.hash);
-    await showView(parsed.view || 'dashboard', parsed.arg);
+    var authEl=document.getElementById('auth-screen');
+    var appEl=document.getElementById('app');
+    if(authEl) authEl.style.display='none';
+    if(appEl)  appEl.style.display='flex';
+    var parsed=parseHash(window.location.hash);
+    await showView(parsed.view||'dashboard',parsed.arg);
   } else {
-    currentUser = null;
-    _currentUserProfile = null;
-    _isAdmin = false;
+    currentUser=null;
+    _currentUserProfile=null;
+    _isAdmin=false;
+    _appInitialized=false;
     hideSpinner();
-    var authEl2 = document.getElementById('auth-screen');
-    var appEl2  = document.getElementById('app');
-    if(authEl2) authEl2.style.display = 'flex';
-    if(appEl2)  appEl2.style.display  = 'none';
+    var authEl2=document.getElementById('auth-screen');
+    var appEl2=document.getElementById('app');
+    if(authEl2) authEl2.style.display='flex';
+    if(appEl2)  appEl2.style.display='none';
   }
 });
+
 
 // ─── SIGN IN ─────────────────────────────────────────────────────────────────────────────────
 async function signIn(){
@@ -2501,6 +2509,7 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
   html += '<div class="detail-field"><label>Engine</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(engine||'Not specified')+'</div></div>';
   if(vOwner){ html += '<div class="detail-field"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:6px"><span style="font-size:16px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>'; } else { html += '<div></div>'; }
   html += '</div>';
+  html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
   if(interiorColor){
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
   }
