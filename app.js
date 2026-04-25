@@ -142,7 +142,7 @@ function getCategories(){
 
 // ─── NETWORK HELPERS ─────────────────────────────────────────────────────────────────────────
 function withTimeout(promise, ms){
-  ms = ms || 15000;
+  ms = ms || 8000;
   var t = new Promise(function(_, reject){
     setTimeout(function(){
       reject(new Error('Request timed out after ' + (ms/1000) + 's — please try again.'));
@@ -162,7 +162,7 @@ function errBox(msg, techDetail){
     '<strong style="font-size:16px;display:block;margin-bottom:8px">&#x26A0;&#xFE0F; Something went wrong</strong>' +
     esc(msg) +
     '<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">' +
-    '<button class="btn btn-secondary btn-sm" onclick="location.reload()">&#x1F504; Refresh</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
     reportBtn +
     '</div></div></div>';
 }
@@ -354,14 +354,15 @@ db.auth.onAuthStateChange(async function(event, session){
       // Load catalog — fast, always needed, load first
       await loadCatalog();
       // Load user profile in parallel with first data fetch
-      var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
+      var profRes = await withTimeout(db.from('profiles').select('*').eq('id', currentUser.id).single(), 6000);
       _currentUserProfile = profRes.data || null;
       _isAdmin = _currentUserProfile && _currentUserProfile.role === 'admin';
       // Update display with profile color
       if(_currentUserProfile){
         var ucolor = _currentUserProfile.user_color || '#FFD700';
         var dname = _currentUserProfile.display_name || _currentUserProfile.username || uname;
-        if(display) display.innerHTML = '<span style="color:' + ucolor + ';font-weight:600">' + esc(dname) + '</span>';
+        var emoji2 = _currentUserProfile.avatar_emoji || '🐔';
+        if(display) display.innerHTML = emoji2 + ' <span style="color:' + ucolor + ';font-weight:600">' + esc(dname) + '</span>';
       }
       var adminNav = document.getElementById('admin-nav');
       if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
@@ -440,7 +441,7 @@ async function signUp(){
   if(r.data && r.data.user){
     await db.from('profiles').upsert({
       id:r.data.user.id, username:username, display_name:username,
-      full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700'
+      full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700', avatar_emoji:'🐔'
     }).catch(function(){});
   }
   toast('Account created! Sign in with your username.', 'success');
@@ -460,6 +461,25 @@ async function signOut(){ await db.auth.signOut(); }
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // ─── NAVIGATION / VIEW ROUTING ──────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+// ─── RETRY CURRENT VIEW — re-renders without full page reload ────────────────────────────────
+async function retryCurrentView(){
+  // Invalidate session cache for current view so fresh data is fetched
+  var view = _currentView;
+  if(view === 'parts' || view === 'part-profile' || view === 'dashboard'){
+    invalidateInventory();
+  }
+  if(view === 'vehicles' || view === 'vehicle-profile' || view === 'dashboard'){
+    invalidateVehicles();
+  }
+  if(view === 'wishlist'){
+    invalidateWishlist();
+  }
+  // Re-render current view
+  var parsed = parseHash(window.location.hash);
+  await showView(parsed.view || _currentView, parsed.arg);
+}
 
 async function showView(view, arg){
   if(window.innerWidth <= 768) closeSidebar();
@@ -520,7 +540,7 @@ async function renderUserProfile(){
   if(!el) return;
   el.innerHTML = viewLoading('Loading profile...');
   try{
-    var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
+    var profRes = await withTimeout(db.from('profiles').select('*').eq('id', currentUser.id).single(), 6000);
     _currentUserProfile = profRes.data || {};
     _isAdmin = _currentUserProfile.role === 'admin';
   }catch(e){}
@@ -540,7 +560,14 @@ async function renderUserProfile(){
   // Profile card
   html += '<div class="card" style="margin-bottom:20px">';
   html += '<div style="text-align:center;margin-bottom:20px">';
-  html += '<div style="width:80px;height:80px;border-radius:50%;background:'+ucolor+';margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:32px;font-family:Bebas Neue,sans-serif;color:#000">'+esc(uname.charAt(0).toUpperCase())+'</div>';
+  var currentEmoji = p.avatar_emoji || '🐔';
+  html += '<div style="position:relative;width:80px;margin:0 auto 12px">';
+  html += '<div style="width:80px;height:80px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:40px">'+currentEmoji+'</div>';
+  html += '</div>';
+  html += '<div style="display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
+  html += AVATAR_EMOJIS.map(function(e){ return '<button onclick="selectAvatar(\''+e+'\')" style="background:'+(e===currentEmoji?ucolor:'var(--surface)')+';border:2px solid '+(e===currentEmoji?ucolor:'var(--border)')+';border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;transition:all .2s">'+e+'</button>'; }).join('');
+  html += '</div>';
+  html += '<input type="hidden" id="up-avatar" value="'+currentEmoji+'">';
   html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:700;color:'+ucolor+'">'+esc(dname)+'</div>';
   html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(role)+'</div>';
   html += '</div>';
@@ -598,11 +625,28 @@ async function applyInviteCodeFromProfile(){
   await renderUserProfile();
 }
 
+
+function selectAvatar(emoji){
+  document.getElementById('up-avatar').value = emoji;
+  // Update all buttons
+  var buttons = document.querySelectorAll('[onclick^="selectAvatar"]');
+  var color = document.getElementById('up-color').value || '#FFD700';
+  buttons.forEach(function(btn){
+    var isSelected = btn.textContent === emoji;
+    btn.style.background = isSelected ? color : 'var(--surface)';
+    btn.style.borderColor = isSelected ? color : 'var(--border)';
+  });
+  // Update preview circle
+  var circles = document.querySelectorAll('[style*="border-radius:50%"][style*="width:80px"]');
+  circles.forEach(function(c){ if(c.style.fontSize==='40px') c.textContent = emoji; });
+}
+
 async function saveUserProfile(){
   var dname = val('up-dname');
   var color = document.getElementById('up-color') ? document.getElementById('up-color').value : '#FFD700';
+  var avatar = val('up-avatar') || '🐔';
   if(!dname) return toast('Display name cannot be empty','error');
-  var{error} = await db.from('profiles').update({display_name:dname, user_color:color}).eq('id', currentUser.id);
+  var{error} = await db.from('profiles').update({display_name:dname, user_color:color, avatar_emoji:avatar}).eq('id', currentUser.id);
   if(error){ toast(error.message,'error'); return; }
   _currentUserProfile = Object.assign({}, _currentUserProfile, {display_name:dname, user_color:color});
   // Update sidebar display
@@ -635,6 +679,7 @@ async function renderUsersPanel(){
     html += '<div class="page-title" style="font-size:42px">Users</div>';
     html += '<div class="page-subtitle" style="font-size:12px">Manage access and roles</div></div></div>';
 
+    var unknownCount = 0;
     users.forEach(function(u){
       var ucolor = u.user_color || '#FFD700';
       var isMe = u.id === currentUser.id;
@@ -642,7 +687,7 @@ async function renderUsersPanel(){
       html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">';
       html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
       html += '<div style="flex:1">';
-      html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.display_name||u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
+      html += '<div style="font-weight:600;color:'+ucolor+'">'+(function(){ if(!u.display_name && !u.username){ unknownCount++; return 'Unknown '+unknownCount; } return esc(u.display_name||u.username||'Unknown'); })()+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
@@ -650,6 +695,7 @@ async function renderUsersPanel(){
       if(!isMe){
         html += '<div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">';
         // Role selector
+        html += '<button class="btn btn-ghost btn-sm" onclick="setAdminNickname(\''+u.id+'\')">&#x270F;&#xFE0F; Nickname</button>';
         html += '<select class="form-control" style="width:auto;font-size:12px" onchange="setUserRole(\''+u.id+'\',this.value)">';
         ['admin','owner','guest','tester'].forEach(function(r){
           html += '<option value="'+r+'"'+(u.role===r?' selected':'')+'>'+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';
@@ -671,12 +717,7 @@ async function renderUsersPanel(){
         html += '</div>';
       }
       html += '</div>';
-      // Admin can hard-delete install history
-      if(_isAdmin && u.id !== currentUser.id){
-        html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
-        html += '<button class="btn btn-danger btn-sm" onclick="adminDeleteInstalls(\''+u.id+'\',\''+esc(u.username||'this user')+'\')" style="font-size:11px">🗑️ Delete ALL install history (permanent)</button>';
-        html += '</div>';
-      }
+      
       html += '</div>';
     });
 
@@ -692,6 +733,7 @@ async function renderUsersPanel(){
       codes.forEach(function(c){
         html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">';
         html += '<code style="font-size:14px;color:var(--accent);flex:1">'+esc(c.code)+'</code>';
+        html += '<button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText(\''+c.code+'\').then(function(){toast(\'Copied!\',\'success\')})" title="Copy code">&#x1F4CB;</button>';
         html += '<span style="font-size:12px;color:var(--text-muted);text-transform:uppercase">'+esc(c.role)+'</span>';
         html += '<span style="font-size:12px;color:var(--text-muted)">Used: '+( c.uses||0)+'x</span>';
         html += '<span style="font-size:12px;color:'+(c.is_active?'var(--success)':'var(--danger)')+'">'+( c.is_active?'Active':'Inactive')+'</span>';
@@ -731,6 +773,16 @@ async function deleteInviteCode(id){
   if(!confirm('Delete this invite code?')) return;
   await db.from('invite_codes').delete().eq('id',id);
   toast('Deleted','success');
+  await renderUsersPanel();
+}
+
+
+async function setAdminNickname(userId){
+  var nick = prompt('Set a nickname for this user (leave blank to clear):');
+  if(nick === null) return;
+  var{error} = await db.from('profiles').update({display_name: nick.trim() || null}).eq('id', userId);
+  if(error){ toast(error.message,'error'); return; }
+  toast(nick.trim() ? 'Nickname set!' : 'Nickname cleared', 'success');
   await renderUsersPanel();
 }
 
@@ -1309,9 +1361,11 @@ async function startInstallForVehicle(vehicleId, cpId){
 }
 
 async function renderPartProfile(arg){
+  var myToken = Date.now();
   const el=document.getElementById('view-part-profile');
   if(!el) return;
   el.innerHTML=viewLoading('Loading part...');
+  el.dataset.renderToken = myToken;
 
   const id = arg?.id;
   const type = arg?.type || 'catalog';
@@ -1547,6 +1601,7 @@ async function renderPartProfile(arg){
   html += '<div id="comments-part-'+id+'"></div></div>';
 
   if(el.dataset.renderToken != myToken) return; // navigated away, discard
+  if(String(el.dataset.renderToken) !== String(myToken)) return; // navigated away
   el.innerHTML = html;
   // Load comments after render
   renderComments('part', id, 'comments-part-'+id);
@@ -2199,9 +2254,13 @@ function printPartLabel(name,qrUrl,oem,location){
 async function renderVehicles(){
   const el=document.getElementById('view-vehicles');
   let vehicles=[];
+  let ownerProfiles=[];
   try{
     if(!_session.vehicles) el.innerHTML=viewLoading('Loading vehicles...');
-    vehicles=await getVehicles();
+    [vehicles] = await Promise.all([getVehicles()]);
+    // Fetch owner assignments
+    var opRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id','is',null);
+    ownerProfiles = opRes.data || [];
   }catch(err){
     el.innerHTML=errBox(err.message, err.stack);
     console.error(err);
@@ -2222,7 +2281,7 @@ async function renderVehicles(){
     vehicles.forEach(function(v){
       const driverName=getVehicleDisplayName(v);
       const subtitle=[v.make,v.model,v.trim].filter(Boolean).join(' ').replace(/\s+AWD$/,'');
-      html+='<div class="vehicle-card" onclick="showView(\'vehicle-profile\',{id:\''+v.id+'\'})">';
+      html+='<div class="vehicle-card" style="position:relative" onclick="showView(\'vehicle-profile\',{id:\''+v.id+'\'})">';
       html+='<div class="vehicle-year-bg">'+v.year+'</div>';
       html+='<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:22px;font-weight:700;text-transform:uppercase;color:var(--text)">'+esc(driverName)+'</div>';
       html+='<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;display:flex;align-items:center;gap:8px">'+esc(subtitle);
@@ -2230,6 +2289,13 @@ async function renderVehicles(){
       html+='</div>';
       html+='<div style="font-size:13px;color:var(--text-muted)">🛣 <span style="color:var(--text);font-weight:600">'+(v.current_mileage||0).toLocaleString()+'</span> miles</div>';
       if(v.vin) html+='<div style="font-size:11px;color:var(--text-dim);margin-top:4px">VIN: '+esc(v.vin)+'</div>';
+      // Find owner for this vehicle
+      var vOwner = ownerProfiles.find(function(op){ return op.assigned_vehicle_id === v.id; });
+      if(vOwner){
+        html+='<div style="position:absolute;bottom:12px;right:12px;display:flex;align-items:center;gap:4px;font-size:12px;color:'+(vOwner.user_color||'#FFD700')+'">';
+        html+=(vOwner.avatar_emoji||'🐔')+' '+esc(vOwner.display_name||vOwner.username||'Owner');
+        html+='</div>';
+      }
       html+='<div class="flex-row no-print" style="margin-top:14px;flex-wrap:wrap;gap:6px" onclick="event.stopPropagation()">';
       html+='<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\''+v.id+'\')">🛣 Log Miles</button>';
       html+='<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\''+v.id+'\')">🖨️</button>';
@@ -2261,9 +2327,11 @@ async function refreshVehicleView(){
 // (declared in foundation)
 
 async function renderVehicleProfile(arg){
+  var myVToken = Date.now();
   const el=document.getElementById('view-vehicle-profile');
   if(!el) return;
   el.innerHTML=viewLoading('Loading vehicle...');
+  el.dataset.renderToken = myVToken;
 
   const id = arg?.id;
   if(!id){
@@ -2317,6 +2385,12 @@ async function renderVehicleProfile(arg){
   const engine = engineMatch ? engineMatch[1].trim() : '';
   const transmission = transMatch ? transMatch[1].trim() : '';
   const interiorColor = interiorMatch ? interiorMatch[1] : '';
+  // Fetch assigned owner for this vehicle
+  let vOwner = null;
+  try{
+    var ownerRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color').eq('assigned_vehicle_id', id).single();
+    vOwner = ownerRes.data || null;
+  }catch(e){}
 
   const tab = _currentVehicleProfile.tab || 'overview';
 
@@ -2359,7 +2433,7 @@ async function renderVehicleProfile(arg){
   html += '</div>';
 
   html += '<div id="vehicle-tab-content">';
-  if(tab==='overview') html += renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs);
+  if(tab==='overview') html += renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs, vOwner);
   else if(tab==='service') html += renderServiceTab(services, id);
   else if(tab==='parts') html += renderPartsTab(installs, id);
   else if(tab==='photos') html += renderPhotosTab(v);
@@ -2374,7 +2448,7 @@ function setVehicleTab(tab){
   renderVehicleProfile({id: _currentVehicleProfile.id});
 }
 
-function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs){
+function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs, vOwner){
   const active = (installs||[]).filter(function(i){return !i.removed_date;});
   let html = '<div class="grid-2" style="gap:16px">';
 
@@ -2384,6 +2458,9 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
   html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:\'Barlow Condensed\',sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
   if(interiorColor){
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
+  }
+  if(vOwner){
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">'+(vOwner.avatar_emoji||'🐔')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>';
   }
   html += '</div>';
 
