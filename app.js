@@ -221,6 +221,7 @@ function applyAppData(d){
   _cache.vehicles  = d.vehicles  || [];
   _cache.wishlist  = d.wishlist  || [];
   _cache.reminders = d.reminders || [];
+  if(d.userProfile) _currentUserProfile = d.userProfile;
   dbInventory = _cache.inventory;
 }
 
@@ -253,7 +254,8 @@ async function refreshFromSupabase(showErrors, timeoutMs){
       db.from('parts').select('*'),
       db.from('vehicles').select('*').order('year',{ascending:false}),
       db.from('wishlist').select('*').order('created_at',{ascending:false}),
-      db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true)
+      db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true),
+      currentUser ? db.from('profiles').select('*').eq('id',currentUser.id).single() : Promise.resolve({data:null})
     ]), timeoutMs || (showErrors ? 12000 : 8000));
     if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
     var freshData = {
@@ -262,7 +264,8 @@ async function refreshFromSupabase(showErrors, timeoutMs){
       inventory:   results[2].data || [],
       vehicles:    results[3].data || [],
       wishlist:    results[4].data || [],
-      reminders:   results[5].data || []
+      reminders:   results[5].data || [],
+      userProfile: results[6].data || null
     };
     applyAppData(freshData);
     saveToLS(freshData);
@@ -309,24 +312,21 @@ async function fetchWishlist(force){
 db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
-    // Load user profile (role, color, display name)
-    try{
-      var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
-      _currentUserProfile = profRes.data || null;
-      _isAdmin = _currentUserProfile && _currentUserProfile.role === 'admin';
-    }catch(e){ _currentUserProfile = null; _isAdmin = false; }
-    var uname = (_currentUserProfile && _currentUserProfile.username) ||
-                (currentUser.user_metadata && currentUser.user_metadata.username) ||
-                currentUser.email;
-    var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+    // Show name from user_metadata immediately (no DB fetch needed)
+    var uname = (currentUser.user_metadata && currentUser.user_metadata.username) || currentUser.email;
     var display = document.getElementById('user-email-display');
-    if(display){
-      display.innerHTML = '<span style="color:'+ucolor+';font-weight:600">'+esc(uname)+'</span>';
+    if(display) display.innerHTML = '<span style="font-weight:600">'+esc(uname)+'</span>';
+    // Load all data (includes profile in parallel)
+    await loadAllData();
+    // Now update display with profile color if available
+    if(_currentUserProfile){
+      var ucolor2 = _currentUserProfile.user_color || '#FFD700';
+      var uname2 = _currentUserProfile.display_name || _currentUserProfile.username || uname;
+      if(display) display.innerHTML = '<span style="color:'+ucolor2+';font-weight:600">'+esc(uname2)+'</span>';
+      _isAdmin = _currentUserProfile.role === 'admin';
     }
-    // Show admin nav item if admin
     var adminNav = document.getElementById('admin-nav');
     if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
-    await loadAllData();
     hideSpinner();
     var authEl = document.getElementById('auth-screen');
     var appEl = document.getElementById('app');
