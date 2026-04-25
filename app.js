@@ -810,7 +810,7 @@ async function renderFeedbackPage(){
   try{
     var myFeedback = [];
     var allFeedback = [];
-    var res = await db.from('feedback').select('*').order('created_at',{ascending:false});
+    var res = await withTimeout(db.from('feedback').select('*').order('created_at',{ascending:false}), 8000);
     allFeedback = res.data || [];
     myFeedback = allFeedback.filter(function(f){ return f.user_id === currentUser.id; });
 
