@@ -692,10 +692,9 @@ async function renderUsersPanel(){
       var isMe = u.id === currentUser.id;
       html += '<div class="card" style="margin-bottom:12px">';
       html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">';
-      html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
+      html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">'+(u.avatar_emoji||'🐇')+'</div>';
       html += '<div style="flex:1">';
       html += '<div style="font-weight:600;color:'+ucolor+'">'+(function(){ if(!u.display_name && !u.username){ unknownCount++; return 'Unknown '+unknownCount; } return esc(u.display_name||u.username||'Unknown'); })()+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
-      html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       html += '</div>';
@@ -1171,6 +1170,31 @@ async function deleteFeedback(id){
   toast('Deleted','success');
   await renderFeedbackPage();
 }
+
+
+// ─── AUTO MAINTENANCE DEFAULTS ────────────────────────────────────────────────────────────────
+// Created automatically when a new vehicle is added
+var AUTO_MAINTENANCE = [
+  {title:'Oil Change',          interval_miles:5000,  interval_days:180},
+  {title:'Tire Rotation',       interval_miles:7500,  interval_days:180},
+  {title:'Air Filter (Engine)', interval_miles:15000, interval_days:365},
+  {title:'Cabin Air Filter',    interval_miles:15000, interval_days:365},
+  {title:'Spark Plugs',         interval_miles:30000, interval_days:null},
+  {title:'Coolant Check',       interval_miles:30000, interval_days:730},
+  {title:'Brake Fluid',         interval_miles:null,  interval_days:730},
+  {title:'Windshield Wipers',   interval_miles:null,  interval_days:365},
+  {title:'Wiper Fluid',         interval_miles:null,  interval_days:90},
+  {title:'Battery Check',       interval_miles:null,  interval_days:730},
+];
+
+// Commute style mileage estimates (miles per year)
+var COMMUTE_STYLES = {
+  city:     {label:'City Driver',       miles_per_year:8000,  desc:'Lots of short trips, stop-and-go'},
+  mixed:    {label:'Mixed',             miles_per_year:12000, desc:'Combination of city and highway'},
+  highway:  {label:'Highway Commuter',  miles_per_year:15000, desc:'Mostly highway, longer trips'},
+  weekend:  {label:'Weekend Driver',    miles_per_year:3000,  desc:'Rarely used, low mileage'},
+  worktruck:{label:'Work Truck',        miles_per_year:20000, desc:'Heavy use, towing or hauling'},
+};
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
@@ -2419,7 +2443,7 @@ async function renderVehicleProfile(arg){
   html += '<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\''+id+'\')">🛣 Log Miles</button>';
   html += '<button class="btn btn-secondary btn-sm" onclick="showVehicleModal(\''+id+'\')">✏️ Edit</button>';
   html += '<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\''+id+'\')">🖨️ Print</button>';
-  html += '<button class="btn btn-danger btn-sm" onclick="confirmDeleteVehicle(\''+id+'\',\''+esc(driverName).replace(/'/g,'&#39;')+'\')">🗑️</button>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="toast(\'Sell feature coming soon\',\'info\')" title="Sell vehicle (coming soon)">💰 Sell</button>';
   html += '</div></div></div>';
 
   // Due reminders banner
@@ -2445,7 +2469,7 @@ async function renderVehicleProfile(arg){
   if(tab==='overview') html += renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs, vOwner);
   else if(tab==='service') html += renderServiceTab(services, id);
   else if(tab==='parts') html += renderPartsTab(installs, id);
-  else if(tab==='photos') html += renderPhotosTab(v);
+  else if(tab==='photos') html += await renderPhotosTab(v);
   else if(tab==='reminders') html += renderRemindersTab(reminders, v, id);
   html += '</div>';
 
@@ -2457,19 +2481,28 @@ function setVehicleTab(tab){
   renderVehicleProfile({id: _currentVehicleProfile.id});
 }
 
+
+function filterReminders(query){
+  // Simple client-side filter of visible reminders
+  var items=document.querySelectorAll('.reminder-card');
+  items.forEach(function(card){
+    var text=card.textContent.toLowerCase();
+    card.style.display=(!query.trim()||text.includes(query.toLowerCase()))?'':'none';
+  });
+}
+
 function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs, services, installs, vOwner){
   const active = (installs||[]).filter(function(i){return !i.removed_date;});
   let html = '<div class="grid-2" style="gap:16px">';
 
   // Left: specs
   html += '<div class="card"><div class="stat-label" style="margin-bottom:12px">Vehicle Specs</div>';
-  html += '<div class="detail-field" style="margin-bottom:10px"><label>Engine</label><div class="value" style="font-family:\'Barlow Condensed\',sans-serif;font-size:18px;color:var(--accent)">'+esc(engine||'Not specified')+'</div></div>';
-  html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:\'Barlow Condensed\',sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
+  html += '<div class="detail-field"><label>Engine</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(engine||'Not specified')+'</div></div>';
+  if(vOwner){ html += '<div class="detail-field"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:6px"><span style="font-size:16px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>'; } else { html += '<div></div>'; }
+  html += '</div>';
   if(interiorColor){
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
-  }
-  if(vOwner){
-    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>';
   }
   html += '</div>';
 
@@ -2636,9 +2669,23 @@ async function deleteVehiclePhoto(photoId, vehicleId){
 
 
 
-async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
+async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style==='city'?'selected':''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style==='mixed'?'selected':''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style==='highway'?'selected':''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style==='weekend'?'selected':''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style==='worktruck'?'selected':''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
 
-async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate();closeModal();await refreshVehicleView()}
+async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null,commute_style:val('v-commute')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}if(!id){
+    // Get the new vehicle ID
+    var{data:newV}=await db.from('vehicles').select('id').order('created_at',{ascending:false}).limit(1).single();
+    if(newV){
+      var commuteKey=val('v-commute')||'mixed';
+      var today2=new Date();
+      var autoItems=AUTO_MAINTENANCE.map(function(m){
+        var nd=null;
+        if(m.interval_days){var d2=new Date(today2);d2.setDate(d2.getDate()+m.interval_days);nd=d2.toISOString().split('T')[0];}
+        return {vehicle_id:newV.id,title:m.title,interval_miles:m.interval_miles,interval_days:m.interval_days,next_due_date:nd,is_active:true,reminder_type:'auto'};
+      });
+      await db.from('maintenance_reminders').insert(autoItems);
+    }
+  }
+  toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate();closeModal();await refreshVehicleView()}
 
 async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate();toast('Deleted','success');await showView('vehicles')}
 
@@ -2734,8 +2781,30 @@ async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await d
 // ─── VEHICLE TAB RENDERERS ────────────────────────────────────────────────────
 
 function renderServiceTab(services, vehicleId){
-  var html='<div style="display:flex;justify-content:flex-end;margin-bottom:16px" class="no-print">';
-  html+='<button class="btn btn-primary btn-sm" onclick="showServiceModal(_currentVehicleProfile.id)">+ Add Service Record</button></div>';
+  var html='<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
+  html+='<input type="text" class="form-control" id="svc-search" placeholder="&#x1F50D; Search service history..." style="flex:1;font-size:13px" oninput="filterServiceHistory(this.value,'+JSON.stringify(services)+')">';
+  html+='<button class="btn btn-primary btn-sm" onclick="showServiceModal(_currentVehicleProfile.id)">+ Add Record</button>';
+  html+='</div>';
+  html+='<div id="svc-list">';
+  html+=renderServiceList(services);
+  html+='</div>';
+  return html;
+}
+
+function filterServiceHistory(query, services){
+  var el=document.getElementById('svc-list');
+  if(!el) return;
+  var filtered=services;
+  if(query.trim()){
+    var q=query.toLowerCase();
+    filtered=services.filter(function(s){
+      return (s.service_type&&s.service_type.toLowerCase().includes(q))||(s.description&&s.description.toLowerCase().includes(q));
+    });
+  }
+  el.innerHTML=renderServiceList(filtered);
+}
+
+function renderServiceList(services){
   if(!services||services.length===0) return html+'<div class="empty-state"><div class="empty-icon">&#x1F4CB;</div><p>No service records yet</p></div>';
   services.forEach(function(s){
     html+='<div class="service-row"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div>';
@@ -2751,67 +2820,102 @@ function renderServiceTab(services, vehicleId){
 function renderPartsTab(installs, vehicleId){
   var active=(installs||[]).filter(function(i){return !i.removed_date;});
   var removed=(installs||[]).filter(function(i){return !!i.removed_date;});
-  var html='<div style="display:flex;justify-content:flex-end;margin-bottom:16px" class="no-print">';
-  html+='<button class="btn btn-primary btn-sm" onclick="showInstallPartModal(_currentVehicleProfile.id,null,null,null,null)">+ Log Part Installation</button></div>';
-  if(active.length===0&&removed.length===0) return html+'<div class="empty-state"><div class="empty-icon">&#x1F529;</div><p>No parts logged yet</p></div>';
-  function groupByPart(list){
-    var g={};
-    list.forEach(function(i){
-      var k=i.parts&&i.parts.catalog_part_id?i.parts.catalog_part_id:i.parts?i.parts.name:'unknown';
-      if(!g[k]){g[k]={name:i.parts?i.parts.name:'Unknown Part',items:[]};}
-      g[k].items.push(i);
-    });
-    return g;
+  var html='<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
+  html+='<input type="text" class="form-control" id="parts-tab-search" placeholder="&#x1F50D; Search installed parts..." style="flex:1;font-size:13px" oninput="filterInstalledParts(this.value)">';
+  html+='<button class="btn btn-primary btn-sm" onclick="showInstallPartModal(_currentVehicleProfile.id,null,null,null,null)">+ Log Install</button>';
+  html+='</div>';
+  html+='<div id="parts-tab-list">';
+  html+=renderPartsTabContent(active, removed);
+  html+='</div>';
+  return html;
+}
+
+function filterInstalledParts(query){
+  var el=document.getElementById('parts-tab-list');
+  if(!el) return;
+  // Re-render with filter
+  var allInstalls = _installedPartsCache || [];
+  var active=allInstalls.filter(function(i){return !i.removed_date;});
+  var removed=allInstalls.filter(function(i){return !!i.removed_date;});
+  if(query.trim()){
+    var q=query.toLowerCase();
+    active=active.filter(function(i){return i.parts&&i.parts.name&&i.parts.name.toLowerCase().includes(q);});
+    removed=removed.filter(function(i){return i.parts&&i.parts.name&&i.parts.name.toLowerCase().includes(q);});
   }
-  function safeId(k){return k.replace(/[^a-z0-9]/gi,'_');}
+  el.innerHTML=renderPartsTabContent(active,removed);
+}
+
+var _installedPartsCache=[];
+
+function renderPartsTabContent(active, removed){
+  _installedPartsCache=[].concat(active,removed);
+  var html='';
+  if(active.length===0&&removed.length===0) return '<div class="empty-state"><div class="empty-icon">&#x1F529;</div><p>No parts logged yet</p></div>';
+
+  function safeId(k){return (k||'').replace(/[^a-z0-9]/gi,'_');}
+
   if(active.length>0){
-    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px">Currently Installed ('+active.length+')</div>';
-    Object.entries(groupByPart(active)).forEach(function(e){
-      var key=e[0],group=e[1],latest=group.items[group.items.length-1];
-      var gid='grp_'+safeId(key);
-      html+='<div class="install-row" style="cursor:pointer" onclick="toggleInstallHistory(\''+gid+'\')">';
-      html+='<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">';
-      html+='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><strong>'+esc(group.name)+'</strong><span class="badge badge-ok">Active</span>';
-      if(group.items.length>1) html+='<span style="font-size:11px;color:var(--text-muted)">'+group.items.length+' installs</span>';
-      html+='</div><span style="font-size:11px;color:var(--text-muted)">&#x25BC; history</span></div>';
-      html+='<div style="font-size:12px;color:var(--text-muted);margin-top:4px">Last installed: '+(latest.installed_date?fmtDate(latest.installed_date):'-');
-      if(latest.installed_mileage) html+=' @ '+latest.installed_mileage.toLocaleString()+' mi';
-      if(latest.time_taken) html+=' &middot; Took: '+esc(latest.time_taken);
-      html+='</div>';
-      html+='<div id="'+gid+'" style="display:none;margin-top:10px" onclick="event.stopPropagation()">';
-      group.items.forEach(function(i){
-        html+='<div style="padding:8px 12px;background:var(--bg);border-radius:6px;margin-top:6px;font-size:12px">';
-        html+='<div style="font-weight:600">'+fmtDate(i.installed_date)+(i.installed_mileage?' @ '+i.installed_mileage.toLocaleString()+' mi':'')+'</div>';
-        if(i.parts) html+='<div style="color:var(--text-muted)">'+esc(i.parts.condition||'-')+'  &middot;  Part #: '+esc(i.parts.part_number||'-')+'</div>';
-        if(i.time_taken) html+='<div style="color:var(--text-muted)">Time: '+esc(i.time_taken)+'</div>';
-        if(i.notes) html+='<div style="color:var(--text-muted);margin-top:3px">'+esc(i.notes)+'</div>';
-        if(!i.removed_date) html+='<div style="margin-top:6px"><button class="btn btn-secondary btn-sm no-print" onclick="event.stopPropagation();showRemovePartModal(\''+i.id+'\')">Mark Removed</button></div>';
+    // Group by catalog category
+    var groups={};
+    active.forEach(function(i){
+      var catName='Other';
+      if(i.parts&&i.parts.catalog_part_id){
+        var cp=_catalog.find(function(p){return p.id===i.parts.catalog_part_id;});
+        if(cp) catName=cp.cat;
+      }
+      if(!groups[catName]) groups[catName]=[];
+      groups[catName].push(i);
+    });
+    // Sort categories alphabetically, put Other last
+    var cats=Object.keys(groups).sort(function(a,b){
+      if(a==='Other') return 1;
+      if(b==='Other') return -1;
+      return a.localeCompare(b);
+    });
+    cats.forEach(function(cat){
+      var icon=CAT_ICONS[cat]||'&#x1F527;';
+      html+='<div style="margin-bottom:16px">';
+      html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)">'+icon+' '+esc(cat)+'</div>';
+      groups[cat].forEach(function(i){
+        var gid='grp_'+safeId(i.parts?i.parts.name:'unk')+'_'+i.id.substring(0,8);
+        html+='<div class="install-row" style="cursor:pointer;margin-bottom:4px" onclick="toggleInstallHistory(\''+gid+'\')">';
+        html+='<div style="display:flex;justify-content:space-between;align-items:center">';
+        html+='<div style="display:flex;align-items:center;gap:8px"><strong style="font-size:13px">'+esc(i.parts?i.parts.name:'Unknown')+'</strong><span class="badge badge-ok" style="font-size:10px">Active</span></div>';
+        html+='<span style="font-size:11px;color:var(--text-muted)">'+(i.installed_date?fmtDate(i.installed_date):'-')+' &#x25BC;</span>';
         html+='</div>';
+        html+='<div id="'+gid+'" style="display:none;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px" onclick="event.stopPropagation()">';
+        if(i.installed_mileage) html+='<div style="color:var(--text-muted)">@ '+i.installed_mileage.toLocaleString()+' mi</div>';
+        if(i.parts) html+='<div style="color:var(--text-muted)">Condition: '+esc(i.parts.condition||'-')+'  Part #: '+esc(i.parts.part_number||'-')+'</div>';
+        if(i.time_taken) html+='<div style="color:var(--text-muted)">Time taken: '+esc(i.time_taken)+'</div>';
+        if(i.notes) html+='<div style="color:var(--text-muted);margin-top:4px">'+esc(i.notes)+'</div>';
+        if(!i.removed_date) html+='<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showRemovePartModal(\''+i.id+'\')" >Mark Removed</button></div>';
+        html+='</div></div>';
       });
-      html+='</div></div>';
+      html+='</div>';
     });
   }
+
   if(removed.length>0){
-    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin:20px 0 10px">Previously Installed ('+removed.length+')</div>';
-    Object.entries(groupByPart(removed)).forEach(function(e){
-      var key=e[0],group=e[1];
-      var gid='rmv_'+safeId(key);
-      html+='<div class="install-row" style="opacity:.6;cursor:pointer" onclick="toggleInstallHistory(\''+gid+'\')">';
+    html+='<div style="margin-top:16px">';
+    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:8px">Previously Installed ('+removed.length+')</div>';
+    removed.forEach(function(i){
+      var rid='rmv_'+i.id.substring(0,8);
+      html+='<div class="install-row" style="opacity:.6;cursor:pointer;margin-bottom:4px" onclick="toggleInstallHistory(\''+rid+'\')">';
       html+='<div style="display:flex;justify-content:space-between;align-items:center">';
-      html+='<strong>'+esc(group.name)+'</strong><span style="font-size:11px;color:var(--text-muted)">'+group.items.length+' record'+(group.items.length>1?'s':'')+'  &#x25BC;</span></div>';
-      html+='<div id="'+gid+'" style="display:none;margin-top:10px" onclick="event.stopPropagation()">';
-      group.items.forEach(function(i){
-        html+='<div style="padding:8px 12px;background:var(--bg);border-radius:6px;margin-top:6px;font-size:12px">';
-        html+='<div>Installed: '+fmtDate(i.installed_date)+(i.installed_mileage?' @ '+i.installed_mileage.toLocaleString()+' mi':'')+'</div>';
-        html+='<div style="color:var(--danger)">Removed: '+fmtDate(i.removed_date)+(i.removal_reason?' - '+esc(i.removal_reason):'')+'</div>';
-        if(i.time_taken) html+='<div style="color:var(--text-muted)">Time: '+esc(i.time_taken)+'</div>';
-        html+='</div>';
-      });
+      html+='<strong style="font-size:13px">'+esc(i.parts?i.parts.name:'Unknown')+'</strong>';
+      html+='<span style="font-size:11px;color:var(--text-muted)">'+(i.removed_date?fmtDate(i.removed_date):'-')+' &#x25BC;</span>';
+      html+='</div>';
+      html+='<div id="'+rid+'" style="display:none;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px" onclick="event.stopPropagation()">';
+      html+='<div>Installed: '+fmtDate(i.installed_date)+(i.installed_mileage?' @ '+i.installed_mileage.toLocaleString()+' mi':'')+'</div>';
+      html+='<div style="color:var(--danger)">Removed: '+fmtDate(i.removed_date)+(i.removal_reason?' — '+esc(i.removal_reason):'')+'</div>';
+      if(i.time_taken) html+='<div style="color:var(--text-muted)">Time: '+esc(i.time_taken)+'</div>';
       html+='</div></div>';
     });
+    html+='</div>';
   }
   return html;
 }
+
 
 function toggleInstallHistory(id){
   var el=document.getElementById(id);
@@ -2820,8 +2924,11 @@ function toggleInstallHistory(id){
 
 function renderRemindersTab(reminders, vehicle, vehicleId){
   var today=new Date();
-  var html='<div style="display:flex;justify-content:flex-end;margin-bottom:16px" class="no-print">';
-  html+='<button class="btn btn-primary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id)">+ Add Reminder</button></div>';
+  var html='<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
+  html+='<input type="text" class="form-control" id="rem-search" placeholder="&#x1F50D; Search reminders..." style="flex:1;font-size:13px" oninput="filterReminders(this.value)">';
+  html+='<button class="btn btn-primary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id)">+ Add Reminder</button>';
+  html+='</div>';
+  var _remCache=reminders; var _vehCache=vehicle;
   if(!reminders||reminders.length===0) return html+'<div class="empty-state"><div class="empty-icon">&#x23F0;</div><p>No maintenance reminders</p></div>';
   reminders.forEach(function(r){
     var snoozed=r.snoozed_until_date&&new Date(r.snoozed_until_date)>today;
