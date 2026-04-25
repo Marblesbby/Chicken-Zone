@@ -8,7 +8,7 @@
 var SUPABASE_URL = 'https://oqseclogmhqlfhjhxmai.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_5v-bGGy8gfVVMQHLbcKmEQ_HB7Y7Lrs';
 var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-var LS_KEY = 'cz_appdata_v3';  // bump version to auto-clear old corrupt caches
+var LS_KEY = 'cz_appdata_v4';  // bump version to auto-clear old corrupt caches
 var LS_TTL = 10 * 60 * 1000;   // 10 minute cache TTL
 
 // ─── CAT ICONS ───────────────────────────────────────────────────────────────
