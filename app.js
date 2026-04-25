@@ -447,7 +447,9 @@ window.addEventListener('hashchange', function(){
 // ─── USER PROFILE ────────────────────────────────────────────────────────────
 
 async function renderUserProfile(){
-  var el = document.getElementById('view-users');
+  var el = document.getElementById(_isAdmin ? 'view-users' : 'view-profile');
+  if(!el) el = document.getElementById('view-users');
+  if(!el) el = document.getElementById('view-profile');
   if(!el) return;
   el.innerHTML = viewLoading('Loading profile...');
   try{
@@ -537,6 +539,7 @@ async function renderUsersPanel(){
     var html = '<div class="page-header"><div style="text-align:center;flex:1">';
     html += '<div class="page-title" style="font-size:42px">Users</div>';
     html += '<div class="page-subtitle" style="font-size:12px">Manage access and roles</div></div></div>';
+    html += '<div class="alert" style="margin-bottom:16px;font-size:13px">To invite someone: have them go to the Chicken Zone site and register with their own username and email. Then assign their role here.</div>';
 
     users.forEach(function(u){
       var ucolor = u.user_color || '#FFD700';
@@ -546,7 +549,11 @@ async function renderUsersPanel(){
       html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
       html += '<div style="flex:1">';
       html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.display_name||u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
+<<<<<<< HEAD
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
+=======
+      html += '<div style="font-size:12px;color:var(--text-muted)">'+esc(u.display_name||u.username||'No name set')+'</div>';
+>>>>>>> 25223077dafb1dadce56c456562a0261d28f733d
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       html += '</div>';
@@ -1437,7 +1444,7 @@ async function saveLocation(partId,location){
   const{error}=await db.from('parts').update({shelf_location:location,scanned_to_location_at:new Date().toISOString()}).eq('id',partId);
   if(error){toast(error.message,'error');return}
   toast('Location saved!','success');closeModal();
-  invalidate('inventory','dashboard');
+  invalidate();
   fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
@@ -1758,7 +1765,7 @@ async function savePartFromWizard(source,prefix,lowStockThreshold){
   toast('Part added to inventory! 🎉','success');
   window._aiReceiptFile=null;
   closeModal();
-  invalidate('inventory','dashboard');
+  invalidate();
   fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
@@ -2192,7 +2199,7 @@ async function openPhotoDetail(photoId, vehicleId){
 }
 
 async function savePhotoTags(photoId, vehicleId){
-  var locTag=val('pd-loc'),dmgRating=val('pd-dmg'),notes=val('pd-notes');
+  var locTag=val('pd-loc'),dmgRating=val('pd-dmg'),notes=val('pd-no  tes');
   if(locTag){await db.from('vehicle_photos').update({is_current:false}).eq('vehicle_id',vehicleId).eq('location_tag',locTag).eq('is_current',true).neq('id',photoId);}
   var{error}=await db.from('vehicle_photos').update({location_tag:locTag||null,damage_rating:dmgRating||null,notes:notes||null,is_current:true}).eq('id',photoId);
   if(error){toast(error.message,'error');return;}
@@ -2209,9 +2216,9 @@ async function deleteVehiclePhoto(photoId, vehicleId){
 
 async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
 
-async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate('vehicles','dashboard');closeModal();await refreshVehicleView()}
+async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate('vehicles','dashboard');toast('Deleted','success');await showView('vehicles')}
+async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate();toast('Deleted','success');await showView('vehicles')}
 
 async function showLogMileageModal(vehicleId){const{data:v}=await db.from('vehicles').select('year,make,model,current_mileage').eq('id',vehicleId).single();showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Log Mileage</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;padding:12px;background:var(--surface);border-radius:6px;font-size:13px"><strong>${v?`${v.year} ${v.make} ${v.model}`:'Vehicle'}</strong><br><span style="color:var(--text-muted)">Current: <strong>${(v?.current_mileage||0).toLocaleString()} mi</strong></span></div><div class="form-group"><label>New Mileage Reading *</label><input type="number" class="form-control" id="ml-miles" placeholder="e.g. 155000"></div><div class="form-group"><label>Note</label><input type="text" class="form-control" id="ml-note" placeholder="e.g. After road trip"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="logMileage('${vehicleId}')">Log Mileage</button></div></div></div>`)}
 
@@ -2221,7 +2228,7 @@ async function showServiceModal(vehicleId){showModal(`<div class="modal-overlay"
 
 async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return toast('Service type required','error');const{error}=await db.from('service_history').insert({vehicle_id:vehicleId,service_type:t,description:val('sr-desc')||null,performed_date:val('sr-date')||null,mileage_at_service:parseInt(document.getElementById('sr-miles').value)||null,performed_by:val('sr-by')||null,notes:val('sr-notes')||null});if(error){toast(error.message,'error');return}toast('Record added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
 
 async function showInstallPartModal(invId, cpId, partName, condition, location){
   var compatVehicles=_cache.vehicles||[];
@@ -2269,7 +2276,7 @@ async function saveInstall(vehicleId){
   if(error){toast(error.message,'error');return;}
   const newQty=(p&&p.quantity>0)?p.quantity-1:0;
   if(p&&p.quantity>0) await db.from('parts').update({quantity:newQty}).eq('id',partId);
-  invalidate('inventory','vehicles','dashboard');
+  invalidate();
   closeModal();
   toast('Part installed!','success');
   if(newQty===0){
@@ -2294,13 +2301,13 @@ function toggleRF(){const t=document.getElementById('mr-type').value;document.ge
 
 async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate();await refreshVehicleView()}
 
 async function showSnoozeModal(reminderId,title){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Snooze Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Snoozing: <strong style="color:var(--text)">${esc(title)}</strong></div><div class="form-group"><label>Snooze Until Date</label><input type="date" class="form-control" id="sn-date"></div><div style="text-align:center;color:var(--text-dim);font-size:12px;margin:4px 0"> -  or  - </div><div class="form-group"><label>Snooze Until Mileage</label><input type="number" class="form-control" id="sn-miles"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="snoozeReminder('${reminderId}')">Snooze</button></div></div></div>`)}
 
 async function snoozeReminder(id){const sd=val('sn-date')||null,sm=parseInt(document.getElementById('sn-miles').value)||null;if(!sd&&!sm)return toast('Enter date or mileage','error');await db.from('maintenance_reminders').update({snoozed_until_date:sd,snoozed_until_mileage:sm}).eq('id',id);toast('Snoozed!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
 
 // ─── VEHICLE TAB RENDERERS ────────────────────────────────────────────────────
 
@@ -2622,7 +2629,7 @@ async function saveWishlistItem(id){
   }
   if(error){ toast(error.message,'error'); return; }
   toast(id?'Updated!':'Added to wishlist!','success');
-  invalidate('wishlist');
+  invalidate();
   closeModal();
   await renderWishlist();
 }
@@ -2755,7 +2762,7 @@ async function saveFoundWishlistItem(){
   await db.from('wishlist').delete().eq('id',wishlistId);
 
   toast('Added to inventory & removed from wishlist!','success');
-  invalidate('inventory','wishlist','dashboard');
+  invalidate();
   closeModal();
   await renderWishlist();
 }
@@ -2771,6 +2778,6 @@ async function deleteWishlistItem(id){
   if(!confirm('Remove from wishlist?')) return;
   await db.from('wishlist').delete().eq('id',id);
   toast('Removed','success');
-  invalidate('wishlist');
+  invalidate();
   await renderWishlist();
 }
