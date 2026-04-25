@@ -515,7 +515,8 @@ async function refreshVehicleView(){
 // ─── USER PROFILE ────────────────────────────────────────────────────────────
 
 async function renderUserProfile(){
-  var el = document.getElementById('view-users');
+  var el = document.getElementById('view-profile');
+  if(!el || el.style.display === 'none') el = document.getElementById('view-users');
   if(!el) return;
   el.innerHTML = viewLoading('Loading profile...');
   try{
@@ -1069,83 +1070,7 @@ function maybeShowTesterBanner(){
 
 // ─── FEEDBACK PAGE ───────────────────────────────────────────────────────────
 
-async function renderFeedbackPage(){
-  var el = document.getElementById('view-feedback');
-  if(!el) return;
-  el.innerHTML = viewLoading('Loading feedback...');
-  try{
-    var myFeedback = [];
-    var allFeedback = [];
-    var res = await withTimeout(db.from('feedback').select('*').order('created_at',{ascending:false}), 8000);
-    allFeedback = res.data || [];
-    myFeedback = allFeedback.filter(function(f){ return f.user_id === currentUser.id; });
-
-    var html = '<div class="page-header"><div style="text-align:center;flex:1">';
-    html += '<div class="page-title" style="font-size:42px">Feedback</div>';
-    html += '<div class="page-subtitle" style="font-size:12px">Bug Reports & Feature Suggestions</div>';
-    html += '</div></div>';
-
-    // Submit form
-    html += '<div class="card" style="margin-bottom:24px">';
-    html += '<div class="stat-label" style="margin-bottom:14px">Submit Feedback</div>';
-    html += '<div class="tabs" style="margin-bottom:16px">';
-    html += '<div class="tab active" id="tab-bug" onclick="switchFeedbackTab(\'bug\')">&#x1F41B; Bug Report</div>';
-    html += '<div class="tab" id="tab-feature" onclick="switchFeedbackTab(\'feature\')">&#x1F4A1; Feature Suggestion</div>';
-    html += '</div>';
-    html += '<input type="hidden" id="feedback-type" value="bug">';
-    html += '<div class="form-group"><label>Title</label>';
-    html += '<input type="text" class="form-control" id="feedback-title" placeholder="Brief description"></div>';
-    html += '<div class="form-group"><label>Details</label>';
-    html += '<textarea class="form-control" id="feedback-desc" rows="4" placeholder="As much detail as possible..."></textarea></div>';
-    html += '<button class="btn btn-primary" onclick="submitFeedback()">Submit</button>';
-    html += '</div>';
-
-    // Admin sees all, users see only their own
-    var displayList = _isAdmin ? allFeedback : myFeedback;
-    var sectionTitle = _isAdmin ? 'All Submissions ('+allFeedback.length+')' : 'My Submissions';
-
-    if(displayList.length > 0){
-      html += '<div class="stat-label" style="margin-bottom:14px">'+sectionTitle+'</div>';
-      displayList.forEach(function(f){
-        var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
-        var typeIcon = f.type==='bug'?'🐛':'💡';
-        html += '<div class="card" style="margin-bottom:10px">';
-        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
-        html += '<div style="flex:1">';
-        if(_isAdmin){
-          html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
-        }
-        html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.title)+'</div>';
-        html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description||'')+'</div>';
-        if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
-        html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
-        html += '</div>';
-        html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
-        html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+esc(f.status||'new').replace('_',' ')+'</span>';
-        if(_isAdmin){
-          html += '<select class="btn-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
-          ['new','in_progress','done','wont_fix'].forEach(function(s){
-            html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace('_',' ')+'</option>';
-          });
-          html += '</select>';
-          html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">' + 'Note</button>';
-          html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">' + 'Del</button>';
-        }
-        html += '</div></div></div>';
-      });
-    }
-
-    el.innerHTML = html;
-  }catch(err){
-    el.innerHTML=errBox(err.message, err.stack);
-  }
-}
-
-function switchFeedbackTab(type){
-  document.getElementById('feedback-type').value = type;
-  document.getElementById('tab-bug').classList.toggle('active', type==='bug');
-  document.getElementById('tab-feature').classList.toggle('active', type==='feature');
-}
+// (renderFeedbackPage defined above)
 
 async function submitFeedback(){
   var type = val('feedback-type') || 'bug';
