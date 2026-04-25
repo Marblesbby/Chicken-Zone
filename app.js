@@ -447,9 +447,9 @@ window.addEventListener('hashchange', function(){
 // ─── USER PROFILE ────────────────────────────────────────────────────────────
 
 async function renderUserProfile(){
-  var el = document.getElementById(_isAdmin ? 'view-users' : 'view-profile');
-  if(!el) el = document.getElementById('view-users');
-  if(!el) el = document.getElementById('view-profile');
+  // Use whichever view is currently visible
+  var el = document.getElementById('view-profile');
+  if(!el || el.style.display === 'none') el = document.getElementById('view-users');
   if(!el) return;
   el.innerHTML = viewLoading('Loading profile...');
   try{
