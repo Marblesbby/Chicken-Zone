@@ -431,6 +431,7 @@ async function showView(view, arg){
     else if(view === 'wishlist') await renderWishlist();
     else if(view === 'users') _isAdmin ? await renderUsersPanel() : await renderUserProfile();
     else if(view === 'profile') await renderUserProfile();
+    else if(view === 'feedback') await renderFeedbackPage();
   } catch(err){
     console.error('showView error for ' + view + ':', err);
     if(el) el.innerHTML = errBox(err.message);
@@ -447,9 +448,7 @@ window.addEventListener('hashchange', function(){
 // ─── USER PROFILE ────────────────────────────────────────────────────────────
 
 async function renderUserProfile(){
-  // Use whichever view is currently visible
-  var el = document.getElementById('view-profile');
-  if(!el || el.style.display === 'none') el = document.getElementById('view-users');
+  var el = document.getElementById('view-users');
   if(!el) return;
   el.innerHTML = viewLoading('Loading profile...');
   try{
@@ -513,6 +512,24 @@ async function renderUserProfile(){
   el.innerHTML = html;
 }
 
+
+async function applyInviteCodeFromProfile(){
+  var code = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!code) return toast('Enter an invite code','error');
+  var icRes = await db.from('invite_codes').select('*').eq('code',code).eq('is_active',true).single();
+  if(icRes.error || !icRes.data) return toast('Invalid or expired invite code','error');
+  var newRole = icRes.data.role;
+  var{error} = await db.from('profiles').update({role:newRole}).eq('id',currentUser.id);
+  if(error){ toast(error.message,'error'); return; }
+  await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id',icRes.data.id);
+  _currentUserProfile = Object.assign({},_currentUserProfile,{role:newRole});
+  _isAdmin = newRole === 'admin';
+  var adminNav = document.getElementById('admin-nav');
+  if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
+  toast('Role updated to '+newRole+'!','success');
+  await renderUserProfile();
+}
+
 async function saveUserProfile(){
   var dname = val('up-dname');
   var color = document.getElementById('up-color') ? document.getElementById('up-color').value : '#FFD700';
@@ -534,21 +551,6 @@ async function requestReTest(){
   await renderUserProfile();
 }
 
-// _____Self Invite Code Swap-------------------------------------------------
-async function applyInviteCodeFromProfile(){
-  var code = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  if(!code) return toast('Enter an invite code','error');
-  var icRes = await db.from('invite_codes').select('*').eq('code',code).eq('is_active',true).single();
-  if(icRes.error || !icRes.data) return toast('Invalid or expired invite code','error');
-  var newRole = icRes.data.role;
-  var{error} = await db.from('profiles').update({role:newRole}).eq('id',currentUser.id);
-  if(error){ toast(error.message,'error'); return; }
-  await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id',icRes.data.id);
-  _currentUserProfile = Object.assign({},_currentUserProfile,{role:newRole});
-  _isAdmin = newRole === 'admin';
-  toast('Role updated to '+newRole+'!','success');
-  await renderUserProfile();
-}
 // ─── ADMIN: USERS PANEL ──────────────────────────────────────────────────────
 
 async function renderUsersPanel(){
@@ -564,7 +566,6 @@ async function renderUsersPanel(){
     var html = '<div class="page-header"><div style="text-align:center;flex:1">';
     html += '<div class="page-title" style="font-size:42px">Users</div>';
     html += '<div class="page-subtitle" style="font-size:12px">Manage access and roles</div></div></div>';
-    html += '<div class="alert" style="margin-bottom:16px;font-size:13px">To invite someone: have them go to the Chicken Zone site and register with their own username and email. Then assign their role here.</div>';
 
     users.forEach(function(u){
       var ucolor = u.user_color || '#FFD700';
@@ -574,6 +575,7 @@ async function renderUsersPanel(){
       html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
       html += '<div style="flex:1">';
       html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.display_name||u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
+      html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       html += '</div>';
@@ -796,6 +798,128 @@ function maybeShowTesterBanner(){
     return '<div class="alert alert-warning" style="margin-bottom:16px">⏳ <strong>Reset requested.</strong> Admin will clear your test data soon.</div>';
   }
   return '<div class="alert" style="background:rgba(100,100,200,.1);border-color:rgba(100,100,200,.3);margin-bottom:16px">🧪 <strong>Tester mode.</strong> <button class="btn btn-secondary btn-sm" onclick="requestReTest()" style="margin-left:8px">Request Data Reset</button></div>';
+}
+
+
+// ─── FEEDBACK PAGE ───────────────────────────────────────────────────────────
+
+async function renderFeedbackPage(){
+  var el = document.getElementById('view-feedback');
+  if(!el) return;
+  el.innerHTML = viewLoading('Loading feedback...');
+  try{
+    var myFeedback = [];
+    var allFeedback = [];
+    var res = await db.from('feedback').select('*').order('created_at',{ascending:false});
+    allFeedback = res.data || [];
+    myFeedback = allFeedback.filter(function(f){ return f.user_id === currentUser.id; });
+
+    var html = '<div class="page-header"><div style="text-align:center;flex:1">';
+    html += '<div class="page-title" style="font-size:42px">Feedback</div>';
+    html += '<div class="page-subtitle" style="font-size:12px">Bug Reports & Feature Suggestions</div>';
+    html += '</div></div>';
+
+    // Submit form
+    html += '<div class="card" style="margin-bottom:24px">';
+    html += '<div class="stat-label" style="margin-bottom:14px">Submit Feedback</div>';
+    html += '<div class="tabs" style="margin-bottom:16px">';
+    html += '<div class="tab active" id="tab-bug" onclick="switchFeedbackTab(\'bug\')">&#x1F41B; Bug Report</div>';
+    html += '<div class="tab" id="tab-feature" onclick="switchFeedbackTab(\'feature\')">&#x1F4A1; Feature Suggestion</div>';
+    html += '</div>';
+    html += '<input type="hidden" id="feedback-type" value="bug">';
+    html += '<div class="form-group"><label>Title</label>';
+    html += '<input type="text" class="form-control" id="feedback-title" placeholder="Brief description"></div>';
+    html += '<div class="form-group"><label>Details</label>';
+    html += '<textarea class="form-control" id="feedback-desc" rows="4" placeholder="As much detail as possible..."></textarea></div>';
+    html += '<button class="btn btn-primary" onclick="submitFeedback()">Submit</button>';
+    html += '</div>';
+
+    // Admin sees all, users see only their own
+    var displayList = _isAdmin ? allFeedback : myFeedback;
+    var sectionTitle = _isAdmin ? 'All Submissions ('+allFeedback.length+')' : 'My Submissions';
+
+    if(displayList.length > 0){
+      html += '<div class="stat-label" style="margin-bottom:14px">'+sectionTitle+'</div>';
+      displayList.forEach(function(f){
+        var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
+        var typeIcon = f.type==='bug'?'🐛':'💡';
+        html += '<div class="card" style="margin-bottom:10px">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+        html += '<div style="flex:1">';
+        if(_isAdmin){
+          html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
+        }
+        html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.title)+'</div>';
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description||'')+'</div>';
+        if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
+        html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
+        html += '</div>';
+        html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
+        html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+esc(f.status||'new').replace('_',' ')+'</span>';
+        if(_isAdmin){
+          html += '<select class="btn-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
+          ['new','in_progress','done','wont_fix'].forEach(function(s){
+            html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace('_',' ')+'</option>';
+          });
+          html += '</select>';
+          html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">' + 'Note</button>';
+          html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">' + 'Del</button>';
+        }
+        html += '</div></div></div>';
+      });
+    }
+
+    el.innerHTML = html;
+  }catch(err){
+    el.innerHTML = errBox(err.message);
+  }
+}
+
+function switchFeedbackTab(type){
+  document.getElementById('feedback-type').value = type;
+  document.getElementById('tab-bug').classList.toggle('active', type==='bug');
+  document.getElementById('tab-feature').classList.toggle('active', type==='feature');
+}
+
+async function submitFeedback(){
+  var type = val('feedback-type') || 'bug';
+  var title = val('feedback-title');
+  var desc = val('feedback-desc');
+  if(!title) return toast('Please enter a title','error');
+  var uname = (_currentUserProfile && (_currentUserProfile.display_name||_currentUserProfile.username)) || 'Unknown';
+  var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+  var{error} = await db.from('feedback').insert({
+    user_id: currentUser.id,
+    username: uname,
+    user_color: ucolor,
+    type: type,
+    title: title,
+    description: desc,
+    status: 'new'
+  });
+  if(error){ toast(error.message,'error'); return; }
+  toast('Feedback submitted! Thank you.','success');
+  await renderFeedbackPage();
+}
+
+async function setFeedbackStatus(id, status){
+  await db.from('feedback').update({status:status, updated_at:new Date().toISOString()}).eq('id',id);
+  await renderFeedbackPage();
+}
+
+async function addAdminNote(id){
+  var note = prompt('Add a note for the user:');
+  if(note===null) return;
+  await db.from('feedback').update({admin_note:note, updated_at:new Date().toISOString()}).eq('id',id);
+  toast('Note added','success');
+  await renderFeedbackPage();
+}
+
+async function deleteFeedback(id){
+  if(!confirm('Delete this feedback entry?')) return;
+  await db.from('feedback').delete().eq('id',id);
+  toast('Deleted','success');
+  await renderFeedbackPage();
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -1231,6 +1355,7 @@ async function renderPartProfile(arg){
   html += '<div class="ms-box" style="margin-top:20px"><div class="ms-box-title">💬 Comments</div>';
   html += '<div id="comments-part-'+id+'"></div></div>';
 
+  if(el.dataset.renderToken != myToken) return; // navigated away, discard
   el.innerHTML = html;
   // Load comments after render
   renderComments('part', id, 'comments-part-'+id);
@@ -1464,7 +1589,7 @@ async function saveLocation(partId,location){
   const{error}=await db.from('parts').update({shelf_location:location,scanned_to_location_at:new Date().toISOString()}).eq('id',partId);
   if(error){toast(error.message,'error');return}
   toast('Location saved!','success');closeModal();
-  invalidate();
+  invalidate('inventory','dashboard');
   fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
@@ -1785,7 +1910,7 @@ async function savePartFromWizard(source,prefix,lowStockThreshold){
   toast('Part added to inventory! 🎉','success');
   window._aiReceiptFile=null;
   closeModal();
-  invalidate();
+  invalidate('inventory','dashboard');
   fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
@@ -2219,7 +2344,7 @@ async function openPhotoDetail(photoId, vehicleId){
 }
 
 async function savePhotoTags(photoId, vehicleId){
-  var locTag=val('pd-loc'),dmgRating=val('pd-dmg'),notes=val('pd-no  tes');
+  var locTag=val('pd-loc'),dmgRating=val('pd-dmg'),notes=val('pd-notes');
   if(locTag){await db.from('vehicle_photos').update({is_current:false}).eq('vehicle_id',vehicleId).eq('location_tag',locTag).eq('is_current',true).neq('id',photoId);}
   var{error}=await db.from('vehicle_photos').update({location_tag:locTag||null,damage_rating:dmgRating||null,notes:notes||null,is_current:true}).eq('id',photoId);
   if(error){toast(error.message,'error');return;}
@@ -2236,9 +2361,9 @@ async function deleteVehiclePhoto(photoId, vehicleId){
 
 async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
 
-async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate();closeModal();await refreshVehicleView()}
+async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate('vehicles','dashboard');closeModal();await refreshVehicleView()}
 
-async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate();toast('Deleted','success');await showView('vehicles')}
+async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate('vehicles','dashboard');toast('Deleted','success');await showView('vehicles')}
 
 async function showLogMileageModal(vehicleId){const{data:v}=await db.from('vehicles').select('year,make,model,current_mileage').eq('id',vehicleId).single();showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Log Mileage</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;padding:12px;background:var(--surface);border-radius:6px;font-size:13px"><strong>${v?`${v.year} ${v.make} ${v.model}`:'Vehicle'}</strong><br><span style="color:var(--text-muted)">Current: <strong>${(v?.current_mileage||0).toLocaleString()} mi</strong></span></div><div class="form-group"><label>New Mileage Reading *</label><input type="number" class="form-control" id="ml-miles" placeholder="e.g. 155000"></div><div class="form-group"><label>Note</label><input type="text" class="form-control" id="ml-note" placeholder="e.g. After road trip"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="logMileage('${vehicleId}')">Log Mileage</button></div></div></div>`)}
 
@@ -2248,7 +2373,7 @@ async function showServiceModal(vehicleId){showModal(`<div class="modal-overlay"
 
 async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return toast('Service type required','error');const{error}=await db.from('service_history').insert({vehicle_id:vehicleId,service_type:t,description:val('sr-desc')||null,performed_date:val('sr-date')||null,mileage_at_service:parseInt(document.getElementById('sr-miles').value)||null,performed_by:val('sr-by')||null,notes:val('sr-notes')||null});if(error){toast(error.message,'error');return}toast('Record added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
+async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
 async function showInstallPartModal(invId, cpId, partName, condition, location){
   var compatVehicles=_cache.vehicles||[];
@@ -2296,7 +2421,7 @@ async function saveInstall(vehicleId){
   if(error){toast(error.message,'error');return;}
   const newQty=(p&&p.quantity>0)?p.quantity-1:0;
   if(p&&p.quantity>0) await db.from('parts').update({quantity:newQty}).eq('id',partId);
-  invalidate();
+  invalidate('inventory','vehicles','dashboard');
   closeModal();
   toast('Part installed!','success');
   if(newQty===0){
@@ -2321,13 +2446,13 @@ function toggleRF(){const t=document.getElementById('mr-type').value;document.ge
 
 async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate();await refreshVehicleView()}
+async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
 async function showSnoozeModal(reminderId,title){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Snooze Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Snoozing: <strong style="color:var(--text)">${esc(title)}</strong></div><div class="form-group"><label>Snooze Until Date</label><input type="date" class="form-control" id="sn-date"></div><div style="text-align:center;color:var(--text-dim);font-size:12px;margin:4px 0"> -  or  - </div><div class="form-group"><label>Snooze Until Mileage</label><input type="number" class="form-control" id="sn-miles"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="snoozeReminder('${reminderId}')">Snooze</button></div></div></div>`)}
 
 async function snoozeReminder(id){const sd=val('sn-date')||null,sm=parseInt(document.getElementById('sn-miles').value)||null;if(!sd&&!sm)return toast('Enter date or mileage','error');await db.from('maintenance_reminders').update({snoozed_until_date:sd,snoozed_until_mileage:sm}).eq('id',id);toast('Snoozed!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
+async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
 
 // ─── VEHICLE TAB RENDERERS ────────────────────────────────────────────────────
 
@@ -2649,7 +2774,7 @@ async function saveWishlistItem(id){
   }
   if(error){ toast(error.message,'error'); return; }
   toast(id?'Updated!':'Added to wishlist!','success');
-  invalidate();
+  invalidate('wishlist');
   closeModal();
   await renderWishlist();
 }
@@ -2782,7 +2907,7 @@ async function saveFoundWishlistItem(){
   await db.from('wishlist').delete().eq('id',wishlistId);
 
   toast('Added to inventory & removed from wishlist!','success');
-  invalidate();
+  invalidate('inventory','wishlist','dashboard');
   closeModal();
   await renderWishlist();
 }
@@ -2798,6 +2923,6 @@ async function deleteWishlistItem(id){
   if(!confirm('Remove from wishlist?')) return;
   await db.from('wishlist').delete().eq('id',id);
   toast('Removed','success');
-  invalidate();
+  invalidate('wishlist');
   await renderWishlist();
 }
