@@ -21,6 +21,9 @@ var CAT_ICONS = {
   'Exterior':'\u{1F697}', 'HVAC':'\u2744\uFE0F'
 };
 
+// ─── AVATAR EMOJI OPTIONS ─────────────────────────────────────────────────────────────────────
+var AVATAR_EMOJIS = ['🐇','🐄','🐖','🐎','🐑','🐓','🦆','🐕','🐈','🦌'];
+
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // ─── APPLICATION STATE ──────────────────────────────────────────────────────────────────────────
 // Single source of truth. All reads go through here. Nothing persists to localStorage.
@@ -342,6 +345,7 @@ async function getPartDescription(catalogId){
 // ─── AUTHENTICATION ─────────────────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
+var _appInitialized = false;
 db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
@@ -350,9 +354,10 @@ db.auth.onAuthStateChange(async function(event, session){
     var display = document.getElementById('user-email-display');
     if(display) display.innerHTML = '<span style="font-weight:600">' + esc(uname) + '</span>';
     try {
-      showSpinner('Opening the garage...');
-      // Load catalog — fast, always needed, load first
-      await loadCatalog();
+      if(!_appInitialized){
+        showSpinner('Opening the garage...');
+        // Load catalog — fast, always needed, load first
+        await loadCatalog();
       // Load user profile in parallel with first data fetch
       var profRes = await withTimeout(db.from('profiles').select('*').eq('id', currentUser.id).single(), 6000);
       _currentUserProfile = profRes.data || null;
@@ -361,11 +366,13 @@ db.auth.onAuthStateChange(async function(event, session){
       if(_currentUserProfile){
         var ucolor = _currentUserProfile.user_color || '#FFD700';
         var dname = _currentUserProfile.display_name || _currentUserProfile.username || uname;
-        var emoji2 = _currentUserProfile.avatar_emoji || '🐔';
+        var emoji2 = _currentUserProfile.avatar_emoji || '🐇';
         if(display) display.innerHTML = emoji2 + ' <span style="color:' + ucolor + ';font-weight:600">' + esc(dname) + '</span>';
       }
       var adminNav = document.getElementById('admin-nav');
       if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
+      _appInitialized = true;
+      } // end if(!_appInitialized)
     } catch(e){
       console.warn('Startup error:', e);
       _currentUserProfile = null;
@@ -441,7 +448,7 @@ async function signUp(){
   if(r.data && r.data.user){
     await db.from('profiles').upsert({
       id:r.data.user.id, username:username, display_name:username,
-      full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700', avatar_emoji:'🐔'
+      full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700', avatar_emoji:'🐇'
     }).catch(function(){});
   }
   toast('Account created! Sign in with your username.', 'success');
@@ -456,7 +463,7 @@ function switchAuthTab(tab){
   document.getElementById('auth-form-register').style.display = tab==='register' ? 'block' : 'none';
 }
 
-async function signOut(){ await db.auth.signOut(); }
+async function signOut(){ _appInitialized = false; await db.auth.signOut(); }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // ─── NAVIGATION / VIEW ROUTING ──────────────────────────────────────────────────────────────────
@@ -560,7 +567,7 @@ async function renderUserProfile(){
   // Profile card
   html += '<div class="card" style="margin-bottom:20px">';
   html += '<div style="text-align:center;margin-bottom:20px">';
-  var currentEmoji = p.avatar_emoji || '🐔';
+  var currentEmoji = p.avatar_emoji || '🐇';
   html += '<div style="position:relative;width:80px;margin:0 auto 12px">';
   html += '<div style="width:80px;height:80px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:40px">'+currentEmoji+'</div>';
   html += '</div>';
@@ -644,7 +651,7 @@ function selectAvatar(emoji){
 async function saveUserProfile(){
   var dname = val('up-dname');
   var color = document.getElementById('up-color') ? document.getElementById('up-color').value : '#FFD700';
-  var avatar = val('up-avatar') || '🐔';
+  var avatar = val('up-avatar') || '🐇';
   if(!dname) return toast('Display name cannot be empty','error');
   var{error} = await db.from('profiles').update({display_name:dname, user_color:color, avatar_emoji:avatar}).eq('id', currentUser.id);
   if(error){ toast(error.message,'error'); return; }
@@ -2295,7 +2302,7 @@ async function renderVehicles(){
       var vOwner = ownerProfiles.find(function(op){ return op.assigned_vehicle_id === v.id; });
       if(vOwner){
         html+='<div style="position:absolute;bottom:12px;right:12px;display:flex;align-items:center;gap:4px;font-size:12px;color:'+(vOwner.user_color||'#FFD700')+'">';
-        html+=(vOwner.avatar_emoji||'🐔')+' '+esc(vOwner.display_name||vOwner.username||'Owner');
+        html+=(vOwner.avatar_emoji||'🐇')+' '+esc(vOwner.display_name||vOwner.username||'Owner');
         html+='</div>';
       }
       html+='<div class="flex-row no-print" style="margin-top:14px;flex-wrap:wrap;gap:6px" onclick="event.stopPropagation()">';
@@ -2462,7 +2469,7 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
   }
   if(vOwner){
-    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">'+(vOwner.avatar_emoji||'🐔')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>';
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>';
   }
   html += '</div>';
 
