@@ -392,7 +392,7 @@ async function signUp(){
   var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
   if(r.error){ toast(r.error.message,'error'); return; }
   if(r.data && r.data.user){
-    await db.from('profiles').upsert({id:r.data.user.id, username:username, full_name:username, real_email:email}).catch(function(){
+    await db.from('profiles').upsert({id:r.data.user.id, username:username, display_name:username, full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700'}).catch(function(){
       return db.from('profiles').upsert({id:r.data.user.id, full_name:username});
     });
   }
@@ -543,10 +543,10 @@ async function renderUsersPanel(){
       var isMe = u.id === currentUser.id;
       html += '<div class="card" style="margin-bottom:12px">';
       html += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">';
-      html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.username||'?').charAt(0).toUpperCase())+'</div>';
+      html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
       html += '<div style="flex:1">';
-      html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
-      html += '<div style="font-size:12px;color:var(--text-muted)">'+esc(u.real_email||u.id.substring(0,8)+'...')+'</div>';
+      html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.display_name||u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
+      html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       html += '</div>';
@@ -583,10 +583,58 @@ async function renderUsersPanel(){
       html += '</div>';
     });
 
+    // Invite codes section
+    html += '<div class="card" style="margin-top:24px">';
+    html += '<div class="stat-label" style="margin-bottom:14px">🔑 Invite Codes</div>';
+    try{
+      var codesRes = await db.from('invite_codes').select('*').order('created_at');
+      var codes = codesRes.data || [];
+      if(codes.length === 0){
+        html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">No invite codes yet.</div>';
+      }
+      codes.forEach(function(c){
+        html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">';
+        html += '<code style="font-size:14px;color:var(--accent);flex:1">'+esc(c.code)+'</code>';
+        html += '<span style="font-size:12px;color:var(--text-muted);text-transform:uppercase">'+esc(c.role)+'</span>';
+        html += '<span style="font-size:12px;color:var(--text-muted)">Used: '+( c.uses||0)+'x</span>';
+        html += '<span style="font-size:12px;color:'+(c.is_active?'var(--success)':'var(--danger)')+'">'+( c.is_active?'Active':'Inactive')+'</span>';
+        html += '<button class="btn btn-ghost btn-sm" onclick="toggleInviteCode(\''+c.id+'\','+(c.is_active?'true':'false')+')">'+( c.is_active?'Deactivate':'Activate')+'</button>';
+        html += '<button class="btn btn-danger btn-sm" onclick="deleteInviteCode(\''+c.id+'\')">Del</button>';
+        html += '</div>';
+      });
+    }catch(e){}
+    html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">';
+    html += '<div class="form-group" style="margin:0;flex:1"><label>New Code</label><input type="text" class="form-control" id="new-code-input" placeholder="e.g. CZOWNER2024" style="text-transform:uppercase"></div>';
+    html += '<div class="form-group" style="margin:0"><label>Role</label><select class="form-control" id="new-code-role"><option value="owner">Owner</option><option value="guest">Guest</option><option value="tester">Tester</option></select></div>';
+    html += '<button class="btn btn-primary" onclick="createInviteCode()" style="margin-bottom:0">+ Add Code</button>';
+    html += '</div></div>';
+
     el.innerHTML = html;
   }catch(err){
     el.innerHTML = errBox(err.message);
   }
+}
+
+async function createInviteCode(){
+  var code = (document.getElementById('new-code-input').value||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  var role = document.getElementById('new-code-role').value;
+  if(!code) return toast('Enter a code','error');
+  var{error} = await db.from('invite_codes').insert({code:code, role:role, is_active:true, uses:0});
+  if(error){ toast(error.message,'error'); return; }
+  toast('Code created!','success');
+  await renderUsersPanel();
+}
+
+async function toggleInviteCode(id, currentlyActive){
+  await db.from('invite_codes').update({is_active:!currentlyActive}).eq('id',id);
+  await renderUsersPanel();
+}
+
+async function deleteInviteCode(id){
+  if(!confirm('Delete this invite code?')) return;
+  await db.from('invite_codes').delete().eq('id',id);
+  toast('Deleted','success');
+  await renderUsersPanel();
 }
 
 async function setUserRole(userId, role){
