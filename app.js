@@ -1168,32 +1168,34 @@ async function deleteFeedback(id){
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
   const el=document.getElementById('view-dashboard');
-  if(!null) el.innerHTML=viewLoading('Loading dashboard...');
-  let totalParts=0,totalVehicles=0,parts=[],reminders=[];
+  if(!el) return;
+  // Show loading only on first visit
+  if(!_session.inventory) el.innerHTML=viewLoading('Loading dashboard...');
+  let totalParts=0,totalVehicles=0,parts=[],reminders=[],stalePhotoVehicles=[];
   try{
-    // Use cached inventory if available, only re-fetch reminders (time-sensitive)
-    let inv = await getInventory();
-    // Use cached reminders — refreshed in background by refreshFromSupabase
-    reminders = _session.reminders || [];
+    // All data from session cache — no live Supabase calls on dashboard
+    var [inv, veh, rems] = await Promise.all([
+      getInventory(),
+      getVehicles(),
+      getReminders()
+    ]);
     parts = inv;
     totalParts = inv.length;
-    const veh = await getVehicles();
     totalVehicles = veh.length;
-    // Check for vehicles with stale photos (oldest current photo > 1 year)
-    var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
-    var stalePhotoVehicles=[];
-    try{
-      var photoRes=await db.from('vehicle_photos').select('vehicle_id,uploaded_at,vehicles(id,year,make,model,notes)').eq('is_current',true).order('uploaded_at',{ascending:true});
+    reminders = rems;
+    // Stale photos — use cached vehicles, no extra query
+    var oneYearAgo=new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
+    if(_session.photos){
       var seen={};
-      (photoRes.data||[]).forEach(function(p){
+      (_session.photos||[]).forEach(function(p){
         if(!seen[p.vehicle_id]&&new Date(p.uploaded_at)<oneYearAgo){
           seen[p.vehicle_id]=true;
           stalePhotoVehicles.push(p);
         }
       });
-    }catch(e){}
-    // dashboard data assembled
-  }catch(err){el.innerHTML=errBox(err.message, err.stack);console.error('Dashboard error:',err);return;}
+    }
+  }catch(err){el.innerHTML=errBox(err.message);console.error('Dashboard error:',err);return;}
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
@@ -1206,7 +1208,7 @@ async function renderDashboard(){
   </div>
   ${upcoming.length>0?`<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⚠️ Upcoming Maintenance</div>${upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('')}</div>`:''}
   ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
-  ${(null?.stalePhotoVehicles||[]).length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${(null.stalePhotoVehicles||[]).map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
+  ${stalePhotoVehicles.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${stalePhotoVehicles.map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
