@@ -1,63 +1,87 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHICKEN ZONE — app.js (Clean Rewrite)
-// Auto Parts Inventory Manager for GMT800 family garage
-// Data: Supabase (catalog_parts, part_details, parts, vehicles, wishlist)
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// CHICKEN ZONE — app.js
+// Auto Parts Inventory Manager — GMT800 Family Garage
+// Architecture: Fetch on demand per view, session memory cache, Supabase Pro backend
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-// ─── CONFIG ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── CONFIGURATION ─────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
 var SUPABASE_URL = 'https://oqseclogmhqlfhjhxmai.supabase.co';
 var SUPABASE_KEY = 'sb_publishable_5v-bGGy8gfVVMQHLbcKmEQ_HB7Y7Lrs';
 var db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-var LS_KEY = 'cz_appdata_v4';  // bump version to auto-clear old corrupt caches
-var LS_TTL = 10 * 60 * 1000;   // 10 minute cache TTL
 
-// ─── CAT ICONS ───────────────────────────────────────────────────────────────
+// ─── CATALOG ICON MAP ────────────────────────────────────────────────────────────────────────
 var CAT_ICONS = {
-  'Maintenance':'\u{1F6E2}','Engine':'\u2699\uFE0F','Cooling':'\u{1F321}','Fuel':'\u26FD',
-  'Transmission':'\u{1F504}','Transfer Case':'4\uFE0F\u20E3','Drivetrain':'\u{1F529}',
-  'Brakes':'\u{1F6D1}','Suspension':'\u{1F527}','Steering':'\u{1F3AF}',
-  'Electrical':'\u26A1','Lighting':'\u{1F4A1}','Interior':'\u{1FA91}',
-  'Exterior':'\u{1F697}','HVAC':'\u2744\uFE0F'
+  'Maintenance':'\u{1F6E2}', 'Engine':'\u2699\uFE0F', 'Cooling':'\u{1F321}', 'Fuel':'\u26FD',
+  'Transmission':'\u{1F504}', 'Transfer Case':'4\uFE0F\u20E3', 'Drivetrain':'\u{1F529}',
+  'Brakes':'\u{1F6D1}', 'Suspension':'\u{1F527}', 'Steering':'\u{1F3AF}',
+  'Electrical':'\u26A1', 'Lighting':'\u{1F4A1}', 'Interior':'\u{1FA91}',
+  'Exterior':'\u{1F697}', 'HVAC':'\u2744\uFE0F'
 };
 
-// ─── STATE ───────────────────────────────────────────────────────────────────
-// Single source of truth. Every read goes through here.
-var _catalog = [];        // normalized catalog parts from Supabase
-var _partDetails = {};    // keyed by catalog_part_id
-var _cache = {
-  inventory: null,
-  vehicles:  null,
-  wishlist:  null,
-  dashboard: null,
-  reminders: null,
-  userProfile: null
-};
-var currentUser = null;
-var dbInventory = [];     // alias for _cache.inventory (legacy compat)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── APPLICATION STATE ──────────────────────────────────────────────────────────────────────────
+// Single source of truth. All reads go through here. Nothing persists to localStorage.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-// UI state
-var partsSort = 'alpha', partsSortDir = 1, partSearch = '', partsTimer = null;
-var partsQtyFilter = 'all';
-var wizardStep = 1, wizardVehicle = null, wizardCat = null, wizardPart = null;
-var addMode = '';
-var cameraStream = null;
-var _currentPartProfile = {id:null, name:'', type:'catalog'};
+var currentUser          = null;
+var _currentUserProfile  = null;
+var _isAdmin             = false;
+var _catalog             = [];       // catalog_parts rows, normalized
+var _partDetails         = {};       // part_details keyed by catalog_part_id
+var dbInventory          = [];       // alias for _session.inventory
+
+// ─── SESSION MEMORY CACHE ────────────────────────────────────────────────────────────────────
+// Lives only for this browser session. Gone on page close. No localStorage.
+// Each view populates only what it needs. Shared across views so switching is instant.
+var _session = {
+  catalog:    null,   // loaded once on login, shared everywhere
+  partDetail: null,   // loaded once on login
+  inventory:  null,   // parts table — loaded on first visit to parts/dashboard
+  vehicles:   null,   // vehicles table — loaded on first visit to vehicles/dashboard
+  wishlist:   null,   // wishlist table — loaded on first visit to wishlist
+  reminders:  null,   // maintenance_reminders — loaded on first visit to dashboard/vehicle
+};
+
+// ─── UI STATE ────────────────────────────────────────────────────────────────────────────────
+var partsSort            = 'alpha';
+var partsSortDir         = 1;
+var partSearch           = '';
+var partsTimer           = null;
+var partsQtyFilter       = 'all';
+var wizardStep           = 1;
+var wizardVehicle        = null;
+var wizardCat            = null;
+var wizardPart           = null;
+var addMode              = '';
+var cameraStream         = null;
+var _currentPartProfile  = {id:null, name:'', type:'catalog'};
 var _currentVehicleProfile = {id:null, tab:'overview'};
-var _navigating = false;   // prevents hashchange loop
-var _currentUserProfile = null;  // loaded after auth, contains role/color/etc
-var _isAdmin = false;            // true if current user has admin role
+var _navigating          = false;   // prevents hashchange feedback loop
+var _currentView         = 'dashboard';
 
-// ─── UTILITIES ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── UTILITY FUNCTIONS ──────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// ─── STRING / DOM HELPERS ────────────────────────────────────────────────────────────────────
 function esc(s){
   if(!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function val(id){ var el=document.getElementById(id); return el ? el.value.trim() : ''; }
+function val(id){
+  var el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
 function fmtDate(d){
   if(!d) return '-';
-  var dt = new Date(d+'T12:00:00');
-  return dt.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'});
+  var dt = new Date(d + 'T12:00:00');
+  return dt.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
 }
+
+// ─── TOAST NOTIFICATIONS ─────────────────────────────────────────────────────────────────────
 function toast(msg, type){
   type = type || 'info';
   var c = document.getElementById('toast-container');
@@ -68,6 +92,8 @@ function toast(msg, type){
   c.appendChild(t);
   setTimeout(function(){ t.remove(); }, 3800);
 }
+
+// ─── MODAL ───────────────────────────────────────────────────────────────────────────────────
 function showModal(html){
   var el = document.getElementById('modal-container');
   if(el) el.innerHTML = html;
@@ -77,32 +103,76 @@ function closeModal(){
   if(el) el.innerHTML = '';
   stopCamera();
 }
+
+// ─── BADGES AND DISPLAY HELPERS ──────────────────────────────────────────────────────────────
 function condBadge(c){
   var m = {'New':'badge-new','Used - Good':'badge-good','Used - Fair':'badge-fair','Used - Poor':'badge-poor'};
-  return c ? '<span class="badge '+(m[c]||'')+'">'+c+'</span>' : '<span style="color:var(--text-dim)">-</span>';
+  return c ? '<span class="badge '+(m[c]||'')+'">'+esc(c)+'</span>' : '<span style="color:var(--text-dim)">-</span>';
 }
 function prioBadge(p){
   var m = {'High':'badge-high','Medium':'badge-medium','Low':'badge-ok'};
-  return p ? '<span class="badge '+(m[p]||'')+'">'+p+'</span>' : '';
+  return p ? '<span class="badge '+(m[p]||'')+'">'+esc(p)+'</span>' : '';
 }
 function colorToCss(name){
   if(!name) return '#888';
   var n = name.toLowerCase().trim();
-  var map = {black:'#0a0a0a',white:'#eee',silver:'#c0c0c0',gray:'#888',grey:'#888',red:'#cc0000',blue:'#1e4db7',navy:'#001f5a',green:'#2d7a2d',yellow:'#d4b800',orange:'#e67e00',brown:'#5a3a1e',tan:'#c8a876',beige:'#d4c4a8',gold:'#b8860b',maroon:'#800000',purple:'#4b0082',pink:'#e8769e'};
+  var map = {
+    black:'#0a0a0a', white:'#eee', silver:'#c0c0c0', gray:'#888', grey:'#888',
+    red:'#cc0000', blue:'#1e4db7', navy:'#001f5a', green:'#2d7a2d',
+    yellow:'#d4b800', orange:'#e67e00', brown:'#5a3a1e', tan:'#c8a876',
+    beige:'#d4c4a8', gold:'#b8860b', maroon:'#800000', purple:'#4b0082',
+    pink:'#e8769e'
+  };
   return map[n] || '#888';
 }
+function getVehicleDisplayName(v){
+  if(!v) return 'Unknown';
+  var notes = v.notes || '';
+  var m = notes.match(/Driver:\s*([^.,\n]+)/i);
+  if(m) return m[1].trim() + "'s " + v.model;
+  return v.year + ' ' + v.make + ' ' + v.model;
+}
+
+// ─── CATALOG ACCESSORS ───────────────────────────────────────────────────────────────────────
+function getCatalog(){ return _catalog; }
+function getPartDetail(id){ return _partDetails[id] || null; }
+function getCategories(){
+  return _catalog.map(function(p){return p.cat;}).filter(function(v,i,a){return a.indexOf(v)===i;}).sort();
+}
+
+// ─── NETWORK HELPERS ─────────────────────────────────────────────────────────────────────────
 function withTimeout(promise, ms){
-  ms = ms || 20000;
+  ms = ms || 15000;
   var t = new Promise(function(_, reject){
-    setTimeout(function(){ reject(new Error('Request timed out after '+(ms/1000)+'s. Try refreshing.')); }, ms);
+    setTimeout(function(){
+      reject(new Error('Request timed out after ' + (ms/1000) + 's — please try again.'));
+    }, ms);
   });
   return Promise.race([promise, t]);
 }
-function errBox(msg){
-  return '<div style="padding:40px 32px"><div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6"><strong style="font-size:16px;display:block;margin-bottom:8px">\u26A0\uFE0F Could Not Load Data</strong>'+esc(msg)+'<br><br><button class="btn btn-secondary btn-sm" onclick="location.reload()">\u{1F504} Retry</button></div></div>';
+
+// ─── ERROR DISPLAY ───────────────────────────────────────────────────────────────────────────
+// Shows a friendly error box with refresh and optional bug report buttons
+function errBox(msg, techDetail){
+  var reportBtn = currentUser
+    ? '<button class="btn btn-secondary btn-sm" onclick="openBugReport('+JSON.stringify(msg)+','+JSON.stringify(_currentView)+')">&#x1F41B; Report Bug</button>'
+    : '';
+  return '<div style="padding:40px 32px">' +
+    '<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6">' +
+    '<strong style="font-size:16px;display:block;margin-bottom:8px">&#x26A0;&#xFE0F; Something went wrong</strong>' +
+    esc(msg) +
+    '<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">' +
+    '<button class="btn btn-secondary btn-sm" onclick="location.reload()">&#x1F504; Refresh</button>' +
+    reportBtn +
+    '</div></div></div>';
 }
+
+// ─── LOADING STATE ───────────────────────────────────────────────────────────────────────────
 function viewLoading(msg){
-  return '<div class="view-loading"><div class="egg-spin-sm">\u{1F95A}</div><div style="font-family:Barlow Condensed,sans-serif;font-size:13px;letter-spacing:1px;text-transform:uppercase">'+(msg||'Loading...')+'</div></div>';
+  return '<div class="view-loading">' +
+    '<div class="egg-spin-sm">&#x1F95A;</div>' +
+    '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;letter-spacing:1px;text-transform:uppercase">' +
+    (msg || 'Loading...') + '</div></div>';
 }
 function showSpinner(msg){
   var el = document.getElementById('app-spinner');
@@ -115,14 +185,17 @@ function hideSpinner(){
   var el = document.getElementById('app-spinner');
   if(el) el.style.display = 'none';
 }
+
+// ─── FILE UPLOAD ─────────────────────────────────────────────────────────────────────────────
 async function uploadFile(bucket, file){
   var ext = file.name.split('.').pop();
   var path = currentUser.id + '/' + Date.now() + '.' + ext;
   var r = await db.storage.from(bucket).upload(path, file);
   if(r.error) throw r.error;
-  var u = db.storage.from(bucket).getPublicUrl(path);
-  return u.data.publicUrl;
+  return db.storage.from(bucket).getPublicUrl(path).data.publicUrl;
 }
+
+// ─── SIDEBAR / CAMERA ────────────────────────────────────────────────────────────────────────
 function toggleSidebar(){
   var sb = document.getElementById('sidebar');
   var ov = document.getElementById('sidebar-overlay');
@@ -133,26 +206,28 @@ function closeSidebar(){
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebar-overlay').classList.remove('visible');
 }
-function stopCamera(){ if(cameraStream){ cameraStream.getTracks().forEach(function(t){t.stop();}); cameraStream=null; } }
+function stopCamera(){
+  if(cameraStream){
+    cameraStream.getTracks().forEach(function(t){ t.stop(); });
+    cameraStream = null;
+  }
+}
+
+// ─── LOCATION STORAGE (shelf locations — not GPS) ────────────────────────────────────────────
 function getLocations(){ try{return JSON.parse(localStorage.getItem('cz_locations')||'[]');}catch(e){return[];} }
 function saveLocations(locs){ localStorage.setItem('cz_locations', JSON.stringify(locs)); }
-function getVehicleDisplayName(v){
-  if(!v) return 'Unknown';
-  var notes = v.notes || '';
-  var m = notes.match(/Driver:\s*([^.,\n]+)/i);
-  if(m) return m[1].trim() + "'s " + v.model;
-  return v.year + ' ' + v.make + ' ' + v.model;
-}
-function getCatalog(){ return _catalog; }
-function getPartDetail(id){ return _partDetails[id] || null; }
-function getCategories(){ return [].concat(new Set(_catalog.map(function(p){return p.cat;}))).filter(function(v,i,a){return a.indexOf(v)===i;}).sort(); }
 
-// ─── URL HASH ROUTING ────────────────────────────────────────────────────────
-// Must be defined BEFORE auth handler which calls parseHash on startup
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── URL HASH ROUTING ───────────────────────────────────────────────────────────────────────────
+// Defined BEFORE the auth handler — auth handler calls parseHash on startup.
+// Format: #viewname  or  #viewname/{"key":"value"}
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
 function buildHash(view, arg){
   if(!arg) return '#' + view;
   return '#' + view + '/' + encodeURIComponent(JSON.stringify(arg));
 }
+
 function parseHash(hash){
   if(!hash || hash === '#' || hash === '') return {view:'dashboard', arg:null};
   var h = hash.replace(/^#/, '');
@@ -167,244 +242,228 @@ function parseHash(hash){
   }
 }
 
-// ─── LOCALSTORAGE CACHE ──────────────────────────────────────────────────────
-function saveToLS(data){
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ts:Date.now(), data:data})); }
-  catch(e){ /* quota exceeded or private browsing - ignore */ }
-}
-function loadFromLS(){
-  try {
-    var raw = localStorage.getItem(LS_KEY);
-    if(!raw) return null;
-    var parsed = JSON.parse(raw);
-    if(!parsed || !parsed.ts || !parsed.data) { localStorage.removeItem(LS_KEY); return null; }
-    if(Date.now() - parsed.ts > LS_TTL) { localStorage.removeItem(LS_KEY); return null; }
-    if(!parsed.data.catalog || !Array.isArray(parsed.data.catalog)) { localStorage.removeItem(LS_KEY); return null; }
-    return parsed.data;
-  } catch(e) {
-    try { localStorage.removeItem(LS_KEY); } catch(le){}
-    return null;
-  }
-}
-function normalizeCatalog(rows){
-  return (rows||[]).map(function(row){
+// ─── BROWSER BACK / FORWARD SUPPORT ─────────────────────────────────────────────────────────
+window.addEventListener('hashchange', function(){
+  if(_navigating) return;         // we triggered this change, ignore it
+  if(!currentUser) return;        // not logged in yet, ignore
+  var parsed = parseHash(window.location.hash);
+  showView(parsed.view, parsed.arg);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── DATA LOADING ───────────────────────────────────────────────────────────────────────────────
+// No localStorage. Session memory only. Fetch on demand per view.
+// Catalog loads once on login. Everything else loads when first needed.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+// ─── CATALOG LOAD — runs once on login ───────────────────────────────────────────────────────
+async function loadCatalog(){
+  if(_session.catalog) return; // already loaded this session
+  var results = await withTimeout(Promise.all([
+    db.from('catalog_parts').select('id,name,category,subcategory,oem_number,aftermarket_ref,failure_rank,fits').order('failure_rank'),
+    db.from('part_details').select('*')
+  ]), 15000);
+  if(results[0].error) throw new Error('Catalog failed: ' + results[0].error.message);
+  _catalog = (results[0].data || []).map(function(row){
     return {
-      id: row.id, name: row.name,
-      cat: row.cat || row.category || '',
-      sub: row.sub || row.subcategory || '',
-      oem: row.oem || row.oem_number || '',
-      afm: row.afm || row.aftermarket_ref || '',
-      rank: row.rank || row.failure_rank || 999,
-      fits: row.fits || 'all',
-      desc: row.desc || row.description || ''
+      id:row.id, name:row.name, cat:row.category, sub:row.subcategory||'',
+      oem:row.oem_number||'', afm:row.aftermarket_ref||'',
+      rank:row.failure_rank||999, fits:row.fits||'all', desc:''
     };
   });
-}
-function normalizeDetails(rows){
-  var out = {};
-  (rows||[]).forEach(function(row){
-    var key = row.catalog_part_id || row.id;
-    out[key] = {
-      time: row.time || row.estimated_time || '',
-      tools: row.tools || [],
-      hardware: row.hardware || [],
-      tip: row.tip || row.pro_tip || ''
+  _partDetails = {};
+  (results[1].data || []).forEach(function(row){
+    _partDetails[row.catalog_part_id] = {
+      time:row.estimated_time||'', tools:row.tools||[],
+      hardware:row.hardware||[], tip:row.pro_tip||''
     };
   });
-  return out;
-}
-function applyAppData(d){
-  if(!d || typeof d !== 'object') throw new Error('Invalid cache data');
-  _catalog = normalizeCatalog(d.catalog);
-  _partDetails = (d.partDetails && typeof d.partDetails === 'object') ? d.partDetails : normalizeDetails([]);
-  _cache.inventory = d.inventory || [];
-  _cache.vehicles  = d.vehicles  || [];
-  _cache.wishlist  = d.wishlist  || [];
-  _cache.reminders = d.reminders || [];
-  if(d.userProfile) _currentUserProfile = d.userProfile;
-  dbInventory = _cache.inventory;
+  _session.catalog = true;
+  console.log('Catalog loaded: ' + _catalog.length + ' parts');
 }
 
-// ─── DATA LOADING ────────────────────────────────────────────────────────────
-async function loadAllData(){
-  // Step 1: Try localStorage for instant startup
-  var cached = loadFromLS();
-  if(cached && cached.catalog && cached.catalog.length > 0){
-    try {
-      showSpinner('Opening the garage...');
-      applyAppData(cached);
-      console.log('Loaded from cache: ' + _catalog.length + ' parts');
-      refreshFromSupabase(false); // silent background refresh
-      return;
-    } catch(e){
-      console.warn('Cache corrupt, clearing:', e);
-      try { localStorage.removeItem(LS_KEY); } catch(le){}
-    }
-  }
-  // Step 2: Full load from Supabase
-  showSpinner('Waking up the garage...');
-  await refreshFromSupabase(true, 12000);
-}
-
-async function refreshFromSupabase(showErrors, timeoutMs){
-  try {
-    var results = await withTimeout(Promise.all([
-      db.from('catalog_parts').select('*').order('failure_rank'),
-      db.from('part_details').select('*'),
-      db.from('parts').select('*'),
-      db.from('vehicles').select('*').order('year',{ascending:false}),
-      db.from('wishlist').select('*').order('created_at',{ascending:false}),
-      db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true),
-      currentUser ? db.from('profiles').select('*').eq('id',currentUser.id).single() : Promise.resolve({data:null})
-    ]), timeoutMs || (showErrors ? 12000 : 8000));
-    if(results[0].error) throw new Error('Catalog: ' + results[0].error.message);
-    var freshData = {
-      catalog:     normalizeCatalog(results[0].data || []),
-      partDetails: normalizeDetails(results[1].data || []),
-      inventory:   results[2].data || [],
-      vehicles:    results[3].data || [],
-      wishlist:    results[4].data || [],
-      reminders:   results[5].data || [],
-      userProfile: results[6].data || null
-    };
-    applyAppData(freshData);
-    saveToLS(freshData);
-    console.log('Refreshed from Supabase: ' + _catalog.length + ' parts');
-  } catch(e){
-    console.error('Supabase refresh failed:', e);
-    if(showErrors) toast('Could not connect to Supabase. Check your internet and refresh.', 'error');
-  }
-}
-
-function invalidate(){
-  // Clear in-memory caches. Don't wipe localStorage — background refresh will update it.
-  _cache.inventory = null;
-  _cache.vehicles  = null;
-  _cache.wishlist  = null;
-  _cache.dashboard = null;
-  refreshFromSupabase(false);
-}
-
-async function fetchInventory(force){
-  if(!force && _cache.inventory) return _cache.inventory;
+// ─── ON-DEMAND FETCHERS — each view calls what it needs ──────────────────────────────────────
+async function getInventory(){
+  if(_session.inventory) return _session.inventory;
   var r = await withTimeout(db.from('parts').select('*'));
   if(r.error) throw new Error(r.error.message);
-  _cache.inventory = r.data || [];
-  dbInventory = _cache.inventory;
-  return _cache.inventory;
+  _session.inventory = r.data || [];
+  dbInventory = _session.inventory;
+  return _session.inventory;
 }
-async function fetchVehicles(force){
-  if(!force && _cache.vehicles) return _cache.vehicles;
+async function getVehicles(){
+  if(_session.vehicles) return _session.vehicles;
   var r = await withTimeout(db.from('vehicles').select('*').order('year',{ascending:false}));
   if(r.error) throw new Error(r.error.message);
-  _cache.vehicles = r.data || [];
-  return _cache.vehicles;
+  _session.vehicles = r.data || [];
+  return _session.vehicles;
 }
-async function fetchWishlist(force){
-  if(!force && _cache.wishlist) return _cache.wishlist;
+async function getWishlist(){
+  if(_session.wishlist) return _session.wishlist;
   var r = await withTimeout(db.from('wishlist').select('*').order('created_at',{ascending:false}));
   if(r.error) throw new Error(r.error.message);
-  _cache.wishlist = r.data || [];
-  return _cache.wishlist;
+  _session.wishlist = r.data || [];
+  return _session.wishlist;
+}
+async function getReminders(){
+  if(_session.reminders) return _session.reminders;
+  var r = await withTimeout(db.from('maintenance_reminders').select('*,vehicles(id,year,make,model,notes)').eq('is_active',true));
+  if(r.error) throw new Error(r.error.message);
+  _session.reminders = r.data || [];
+  return _session.reminders;
 }
 
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
+// ─── CACHE INVALIDATION — call after any write operation ─────────────────────────────────────
+function invalidate(){
+  // Clear all session caches so next fetch gets fresh data
+  _session.inventory = null;
+  _session.vehicles  = null;
+  _session.wishlist  = null;
+  _session.reminders = null;
+  // Note: catalog is never invalidated — it only changes when you push a new deploy
+}
+function invalidateInventory(){ _session.inventory = null; dbInventory = []; }
+function invalidateVehicles(){ _session.vehicles = null; _session.reminders = null; }
+function invalidateWishlist(){ _session.wishlist = null; }
+
+// ─── DESCRIPTION FETCH — on demand when opening a part profile ───────────────────────────────
+async function getPartDescription(catalogId){
+  var cp = _catalog.find(function(p){ return p.id === catalogId; });
+  if(!cp) return '';
+  if(cp.desc) return cp.desc; // already fetched
+  try {
+    var r = await db.from('catalog_parts').select('description').eq('id', catalogId).single();
+    if(r.data) cp.desc = r.data.description || '';
+  } catch(e){}
+  return cp.desc || '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── AUTHENTICATION ─────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
 db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
-    // Show name from user_metadata immediately (no DB fetch needed)
+    // Show username immediately from metadata (no DB round trip needed)
     var uname = (currentUser.user_metadata && currentUser.user_metadata.username) || currentUser.email;
     var display = document.getElementById('user-email-display');
-    if(display) display.innerHTML = '<span style="font-weight:600">'+esc(uname)+'</span>';
-    // Load all data (includes profile in parallel)
-    await loadAllData();
-    // Now update display with profile color if available
-    if(_currentUserProfile){
-      var ucolor2 = _currentUserProfile.user_color || '#FFD700';
-      var uname2 = _currentUserProfile.display_name || _currentUserProfile.username || uname;
-      if(display) display.innerHTML = '<span style="color:'+ucolor2+';font-weight:600">'+esc(uname2)+'</span>';
-      _isAdmin = _currentUserProfile.role === 'admin';
+    if(display) display.innerHTML = '<span style="font-weight:600">' + esc(uname) + '</span>';
+    try {
+      showSpinner('Opening the garage...');
+      // Load catalog — fast, always needed, load first
+      await loadCatalog();
+      // Load user profile in parallel with first data fetch
+      var profRes = await db.from('profiles').select('*').eq('id', currentUser.id).single();
+      _currentUserProfile = profRes.data || null;
+      _isAdmin = _currentUserProfile && _currentUserProfile.role === 'admin';
+      // Update display with profile color
+      if(_currentUserProfile){
+        var ucolor = _currentUserProfile.user_color || '#FFD700';
+        var dname = _currentUserProfile.display_name || _currentUserProfile.username || uname;
+        if(display) display.innerHTML = '<span style="color:' + ucolor + ';font-weight:600">' + esc(dname) + '</span>';
+      }
+      var adminNav = document.getElementById('admin-nav');
+      if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
+    } catch(e){
+      console.warn('Startup error:', e);
+      _currentUserProfile = null;
+      _isAdmin = false;
     }
-    var adminNav = document.getElementById('admin-nav');
-    if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
     hideSpinner();
     var authEl = document.getElementById('auth-screen');
-    var appEl = document.getElementById('app');
+    var appEl  = document.getElementById('app');
     if(authEl) authEl.style.display = 'none';
-    if(appEl) appEl.style.display = 'flex';
+    if(appEl)  appEl.style.display  = 'flex';
     // Restore from URL hash
     var parsed = parseHash(window.location.hash);
     await showView(parsed.view || 'dashboard', parsed.arg);
   } else {
     currentUser = null;
+    _currentUserProfile = null;
+    _isAdmin = false;
     hideSpinner();
     var authEl2 = document.getElementById('auth-screen');
-    var appEl2 = document.getElementById('app');
+    var appEl2  = document.getElementById('app');
     if(authEl2) authEl2.style.display = 'flex';
-    if(appEl2) appEl2.style.display = 'none';
+    if(appEl2)  appEl2.style.display  = 'none';
   }
 });
 
-function switchAuthTab(tab){
-  var tabs = document.querySelectorAll('.auth-tab');
-  tabs.forEach(function(t, i){ t.classList.toggle('active', (i===0 && tab==='login') || (i===1 && tab==='register')); });
-  document.getElementById('auth-form-login').style.display = tab==='login' ? 'block' : 'none';
-  document.getElementById('auth-form-register').style.display = tab==='register' ? 'block' : 'none';
-}
+// ─── SIGN IN ─────────────────────────────────────────────────────────────────────────────────
 async function signIn(){
-  var input = document.getElementById('login-username').value.trim();
+  var input    = document.getElementById('login-username').value.trim();
   var password = document.getElementById('login-password').value;
-  if(!input || !password){ toast('Please enter your username and password','error'); return; }
-
-  // If they typed an email address, use it directly
+  if(!input || !password){ toast('Please enter your username and password', 'error'); return; }
+  // Direct email login
   if(input.indexOf('@') >= 0){
-    var result = await db.auth.signInWithPassword({email:input, password:password});
-    if(result.error) toast('Incorrect username or password','error');
+    var r0 = await db.auth.signInWithPassword({email:input, password:password});
+    if(r0.error) toast('Incorrect username or password', 'error');
     return;
   }
-
-  // Username login: look up their real email from profiles table
-  // Then try signing in with that. Fall back to old @chickzone.internal format
-  // for accounts created before this change.
-  var email = null;
-  try{
+  // Username login: look up real email, fall back to old @chickzone.internal format
+  var loginEmail = null;
+  try {
     var pr = await db.from('profiles').select('real_email').eq('username', input).single();
-    if(pr.data && pr.data.real_email) email = pr.data.real_email;
-  }catch(e){}
-
-  if(email){
-    var r1 = await db.auth.signInWithPassword({email:email, password:password});
+    if(pr.data && pr.data.real_email) loginEmail = pr.data.real_email;
+  } catch(e){}
+  if(loginEmail){
+    var r1 = await db.auth.signInWithPassword({email:loginEmail, password:password});
     if(!r1.error) return;
   }
-
-  // Fall back to old internal email format (for existing accounts)
-  var r2 = await db.auth.signInWithPassword({email:input+'@chickzone.internal', password:password});
-  if(r2.error) toast('Incorrect username or password','error');
+  var r2 = await db.auth.signInWithPassword({email:input + '@chickzone.internal', password:password});
+  if(r2.error) toast('Incorrect username or password', 'error');
 }
+
+// ─── SIGN UP ─────────────────────────────────────────────────────────────────────────────────
 async function signUp(){
   var username = document.getElementById('reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
-  var email = document.getElementById('reg-email').value.trim();
+  var email    = document.getElementById('reg-email').value.trim();
   var password = document.getElementById('reg-password').value;
-  if(!username || !email || !password) return toast('Please fill all fields','error');
-  if(username.length < 3) return toast('Username must be at least 3 characters','error');
-  if(email.indexOf('@') < 0) return toast('Please enter a valid email','error');
-  // Use real email for Supabase auth (no fake internal emails)
-  var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
-  if(r.error){ toast(r.error.message,'error'); return; }
-  if(r.data && r.data.user){
-    await db.from('profiles').upsert({id:r.data.user.id, username:username, display_name:username, full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700'}).catch(function(){
-      return db.from('profiles').upsert({id:r.data.user.id, full_name:username});
-    });
+  var invCode  = document.getElementById('reg-invite') ? document.getElementById('reg-invite').value.trim().toUpperCase() : '';
+  if(!username || !email || !password) return toast('Please fill all fields', 'error');
+  if(username.length < 3) return toast('Username must be at least 3 characters', 'error');
+  if(email.indexOf('@') < 0) return toast('Please enter a valid email', 'error');
+  // Check username uniqueness
+  var existing = await db.from('profiles').select('id').eq('username', username).single();
+  if(existing.data) return toast('That username is taken', 'error');
+  // Check invite code if provided
+  var assignedRole = 'viewer';
+  if(invCode){
+    var icRes = await db.from('invite_codes').select('*').eq('code', invCode).eq('is_active', true).single();
+    if(icRes.error || !icRes.data) return toast('Invalid or expired invite code', 'error');
+    assignedRole = icRes.data.role;
+    await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id', icRes.data.id);
   }
-  toast('Account created! Sign in with your username.','success');
+  var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
+  if(r.error){ toast(r.error.message, 'error'); return; }
+  if(r.data && r.data.user){
+    await db.from('profiles').upsert({
+      id:r.data.user.id, username:username, display_name:username,
+      full_name:username, real_email:email, role:assignedRole, user_color:'#FFD700'
+    }).catch(function(){});
+  }
+  toast('Account created! Sign in with your username.', 'success');
   switchAuthTab('login');
   document.getElementById('login-username').value = username;
 }
+
+function switchAuthTab(tab){
+  var tabs = document.querySelectorAll('.auth-tab');
+  tabs.forEach(function(t, i){ t.classList.toggle('active', (i===0&&tab==='login')||(i===1&&tab==='register')); });
+  document.getElementById('auth-form-login').style.display   = tab==='login'    ? 'block' : 'none';
+  document.getElementById('auth-form-register').style.display = tab==='register' ? 'block' : 'none';
+}
+
 async function signOut(){ await db.auth.signOut(); }
 
-// ─── NAVIGATION ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── NAVIGATION / VIEW ROUTING ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
 async function showView(view, arg){
   if(window.innerWidth <= 768) closeSidebar();
+  _currentView = view;
   // Update URL hash for bookmarkability and back/forward
   var newHash = buildHash(view, arg);
   if(window.location.hash !== newHash){
@@ -412,39 +471,47 @@ async function showView(view, arg){
     window.location.hash = newHash;
     setTimeout(function(){ _navigating = false; }, 100);
   }
-  // Highlight nav
-  var navView = (view==='part-profile') ? 'parts' : (view==='vehicle-profile') ? 'vehicles' : view;
+  // Highlight correct nav item
+  var navView = view === 'part-profile' ? 'parts' : view === 'vehicle-profile' ? 'vehicles' : view;
   document.querySelectorAll('.nav-item').forEach(function(n){
     n.classList.toggle('active', n.dataset.view === navView);
   });
-  // Show correct view container
+  // Show correct container
   document.querySelectorAll('#main-content > div').forEach(function(d){ d.style.display = 'none'; });
   var el = document.getElementById('view-' + view);
   if(el) el.style.display = 'block';
   // Render
   try {
-    if(view === 'dashboard') await renderDashboard();
-    else if(view === 'parts') await renderPartsPage();
-    else if(view === 'part-profile') await renderPartProfile(arg);
-    else if(view === 'vehicles') await renderVehicles();
+    if     (view === 'dashboard')       await renderDashboard();
+    else if(view === 'parts')           await renderPartsPage();
+    else if(view === 'part-profile')    await renderPartProfile(arg);
+    else if(view === 'vehicles')        await renderVehicles();
     else if(view === 'vehicle-profile') await renderVehicleProfile(arg);
-    else if(view === 'wishlist') await renderWishlist();
-    else if(view === 'users') _isAdmin ? await renderUsersPanel() : await renderUserProfile();
-    else if(view === 'profile') await renderUserProfile();
-    else if(view === 'feedback') await renderFeedbackPage();
+    else if(view === 'wishlist')        await renderWishlist();
+    else if(view === 'feedback')        await renderFeedbackPage();
+    else if(view === 'profile')         await renderUserProfile();
+    else if(view === 'users')           _isAdmin ? await renderUsersPanel() : await renderUserProfile();
   } catch(err){
     console.error('showView error for ' + view + ':', err);
-    if(el) el.innerHTML = errBox(err.message);
+    if(el) el.innerHTML = errBox('Could not load this page. ' + err.message);
   }
 }
 
-// Browser back/forward support
-window.addEventListener('hashchange', function(){
-  if(_navigating) return;
-  if(!currentUser) return; // ignore hash changes before auth completes
+// ─── REFRESH CURRENT VIEW — call after writes to update displayed data ────────────────────────
+async function refreshCurrentView(){
   var parsed = parseHash(window.location.hash);
-  showView(parsed.view, parsed.arg);
-});
+  await showView(parsed.view || _currentView, parsed.arg);
+}
+async function refreshVehicleView(){
+  if(_currentVehicleProfile.id){
+    await renderVehicleProfile({id:_currentVehicleProfile.id});
+  } else {
+    await renderVehicles();
+  }
+}
+
+
+
 // ─── USER PROFILE ────────────────────────────────────────────────────────────
 
 async function renderUserProfile(){
@@ -561,7 +628,7 @@ async function renderUsersPanel(){
   try{
     var usersRes = await db.from('profiles').select('*').order('created_at');
     var users = usersRes.data || [];
-    var vehicles = _cache.vehicles || await fetchVehicles();
+    var vehicles = _session.vehicles || await getVehicles();
 
     var html = '<div class="page-header"><div style="text-align:center;flex:1">';
     html += '<div class="page-title" style="font-size:42px">Users</div>';
@@ -711,6 +778,205 @@ async function adminDeleteInstalls(userId, username){
     await renderUsersPanel();
   }catch(e){ toast('Delete failed: '+e.message,'error'); }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ─── FEEDBACK PAGE ──────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+var FEEDBACK_LOCATIONS = [
+  'Dashboard','Auto Parts','Part Profile','Vehicles','Vehicle Profile',
+  'Wishlist','Feedback','My Profile','New Page','General / Other'
+];
+
+async function renderFeedbackPage(){
+  var el = document.getElementById('view-feedback');
+  if(!el) return;
+  el.innerHTML = viewLoading('Loading feedback...');
+  try{
+    var res = await withTimeout(db.from('feedback').select('*').order('created_at',{ascending:false}), 10000);
+    if(res.error) throw new Error(res.error.message);
+    var allFeedback = res.data || [];
+    var myFeedback  = allFeedback.filter(function(f){ return f.user_id === currentUser.id; });
+    var displayList = _isAdmin ? allFeedback : myFeedback;
+
+    var html = '<div class="page-header"><div style="text-align:center;flex:1">';
+    html += '<div class="page-title" style="font-size:42px">Feedback</div>';
+    html += '<div class="page-subtitle" style="font-size:12px">Bug Reports & Feature Suggestions</div>';
+    html += '</div></div>';
+
+    // Submit form
+    html += '<div class="card" style="margin-bottom:24px">';
+    html += '<div class="stat-label" style="margin-bottom:14px">Submit Feedback</div>';
+
+    // Type selector
+    html += '<div class="form-group"><label>Type</label>';
+    html += '<select class="form-control" id="fb-type" onchange="updateFeedbackForm()">';
+    html += '<option value="">Select type...</option>';
+    ['Bug Report','New Feature','Improvement','UI / Visual','Performance'].forEach(function(t){
+      html += '<option value="'+t+'">'+t+'</option>';
+    });
+    html += '</select></div>';
+
+    // Location selector
+    html += '<div class="form-group"><label>Location (which page?)</label>';
+    html += '<select class="form-control" id="fb-location">';
+    html += '<option value="">Select page...</option>';
+    FEEDBACK_LOCATIONS.forEach(function(l){ html += '<option value="'+l+'">'+l+'</option>'; });
+    html += '</select></div>';
+
+    // Dynamic fields container
+    html += '<div id="fb-dynamic-fields"></div>';
+
+    html += '<button class="btn btn-primary" onclick="submitFeedback()" style="margin-top:8px">Submit</button>';
+    html += '</div>';
+
+    // Submissions list
+    if(displayList.length > 0){
+      html += '<div class="stat-label" style="margin-bottom:14px">'+(_isAdmin?'All Submissions ('+allFeedback.length+')':'My Submissions')+'</div>';
+      displayList.forEach(function(f){
+        var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
+        var typeIcon = f.type==='Bug Report'?'&#x1F41B;':f.type==='New Feature'?'&#x1F4A1;':f.type==='Improvement'?'&#x1F527;':f.type==='UI / Visual'?'&#x1F3A8;':'&#x26A1;';
+        html += '<div class="card" style="margin-bottom:10px">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+        html += '<div style="flex:1">';
+        if(_isAdmin) html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
+        html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.type||'Feedback')+(f.location?' <span style="font-size:11px;color:var(--text-muted)">— '+esc(f.location)+'</span>':'')+'</div>';
+        if(f.title) html += '<div style="font-size:13px;margin-top:4px">'+esc(f.title)+'</div>';
+        if(f.description) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description)+'</div>';
+        // Show structured fields for admin
+        if(_isAdmin && f.extra_fields){
+          try{
+            var extra = JSON.parse(f.extra_fields);
+            Object.keys(extra).forEach(function(k){
+              if(extra[k]) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px"><strong>'+esc(k)+':</strong> '+esc(extra[k])+'</div>';
+            });
+          }catch(e){}
+        }
+        if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
+        html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
+        html += '</div>';
+        html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
+        html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+(f.status||'new').replace('_',' ')+'</span>';
+        if(_isAdmin){
+          html += '<select class="form-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
+          ['new','in_progress','done','wont_fix'].forEach(function(s){
+            html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';
+          });
+          html += '</select>';
+          html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">&#x1F4DD; Note</button>';
+          html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
+        }
+        html += '</div></div></div>';
+      });
+    } else {
+      html += '<div class="empty-state"><div class="empty-icon">&#x1F4AC;</div><p>No feedback submitted yet</p></div>';
+    }
+
+    el.innerHTML = html;
+  }catch(err){
+    el.innerHTML = errBox('Could not load feedback. ' + err.message);
+  }
+}
+
+// ─── DYNAMIC FORM FIELDS BASED ON TYPE ───────────────────────────────────────────────────────
+function updateFeedbackForm(){
+  var type = val('fb-type');
+  var container = document.getElementById('fb-dynamic-fields');
+  if(!container) return;
+  var html = '';
+  if(type === 'Bug Report'){
+    html += '<div class="form-group"><label>Severity</label><select class="form-control" id="fb-severity"><option value="minor">Minor Annoyance</option><option value="broke">Broke Something</option><option value="blocked">Can&#39;t Use App</option></select></div>';
+    html += '<div class="form-group"><label>What were you doing?</label><textarea class="form-control" id="fb-doing" rows="2" placeholder="Describe what you were doing when it happened..."></textarea></div>';
+    html += '<div class="form-group"><label>What did you expect to happen?</label><textarea class="form-control" id="fb-expected" rows="2" placeholder="What should have happened?"></textarea></div>';
+    html += '<div class="form-group"><label>What actually happened?</label><textarea class="form-control" id="fb-actual" rows="2" placeholder="What went wrong?"></textarea></div>';
+  } else if(type === 'New Feature'){
+    html += '<div class="form-group"><label>Describe the feature</label><textarea class="form-control" id="fb-title" rows="2" placeholder="What would you like to be able to do?"></textarea></div>';
+    html += '<div class="form-group"><label>Why would it be useful?</label><textarea class="form-control" id="fb-description" rows="2" placeholder="How would this help you?"></textarea></div>';
+  } else if(type === 'Improvement'){
+    html += '<div class="form-group"><label>What currently happens?</label><textarea class="form-control" id="fb-doing" rows="2" placeholder="Describe the current behavior..."></textarea></div>';
+    html += '<div class="form-group"><label>What would be better?</label><textarea class="form-control" id="fb-title" rows="2" placeholder="How should it work instead?"></textarea></div>';
+  } else if(type === 'UI / Visual'){
+    html += '<div class="form-group"><label>What looks wrong or could look better?</label><textarea class="form-control" id="fb-title" rows="3" placeholder="Describe the visual issue or suggestion..."></textarea></div>';
+  } else if(type === 'Performance'){
+    html += '<div class="form-group"><label>What is slow or unresponsive?</label><textarea class="form-control" id="fb-title" rows="3" placeholder="What takes too long or feels laggy?"></textarea></div>';
+  }
+  container.innerHTML = html;
+}
+
+// ─── SUBMIT FEEDBACK ─────────────────────────────────────────────────────────────────────────
+async function submitFeedback(){
+  var type     = val('fb-type');
+  var location = val('fb-location');
+  if(!type) return toast('Please select a feedback type', 'error');
+  var uname  = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'Unknown';
+  var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+  // Gather fields based on type
+  var title = val('fb-title') || val('fb-doing') || '';
+  var description = val('fb-description') || val('fb-expected') || '';
+  if(!title && !description) return toast('Please fill in the details', 'error');
+  // Build extra structured fields
+  var extra = {};
+  if(type === 'Bug Report'){
+    extra['Severity']  = val('fb-severity');
+    extra['Doing']     = val('fb-doing');
+    extra['Expected']  = val('fb-expected');
+    extra['Actual']    = val('fb-actual');
+  }
+  var{error} = await db.from('feedback').insert({
+    user_id:currentUser.id, username:uname, user_color:ucolor,
+    type:type, location:location, title:title, description:description,
+    extra_fields: Object.keys(extra).length ? JSON.stringify(extra) : null,
+    status:'new'
+  });
+  if(error){ toast(error.message,'error'); return; }
+  toast('Feedback submitted! Thank you.', 'success');
+  await renderFeedbackPage();
+}
+
+// ─── OPEN BUG REPORT PRE-FILLED (called from error box) ──────────────────────────────────────
+async function openBugReport(errorMsg, currentPage){
+  await showView('feedback');
+  setTimeout(function(){
+    var typeEl = document.getElementById('fb-type');
+    var locEl  = document.getElementById('fb-location');
+    if(typeEl){ typeEl.value = 'Bug Report'; updateFeedbackForm(); }
+    if(locEl && currentPage){
+      // Map view names to location dropdown values
+      var map = {
+        dashboard:'Dashboard', parts:'Auto Parts', 'part-profile':'Part Profile',
+        vehicles:'Vehicles', 'vehicle-profile':'Vehicle Profile', wishlist:'Wishlist',
+        feedback:'Feedback', profile:'My Profile'
+      };
+      locEl.value = map[currentPage] || 'General / Other';
+    }
+    // Pre-fill actual field with error
+    setTimeout(function(){
+      var actualEl = document.getElementById('fb-actual');
+      if(actualEl) actualEl.value = 'Automatic error: ' + (errorMsg||'');
+    }, 100);
+  }, 200);
+}
+
+async function setFeedbackStatus(id, status){
+  await db.from('feedback').update({status:status, updated_at:new Date().toISOString()}).eq('id',id);
+  await renderFeedbackPage();
+}
+async function addAdminNote(id){
+  var note = prompt('Add a note for the user:');
+  if(note === null) return;
+  await db.from('feedback').update({admin_note:note, updated_at:new Date().toISOString()}).eq('id',id);
+  toast('Note added','success');
+  await renderFeedbackPage();
+}
+async function deleteFeedback(id){
+  if(!confirm('Delete this feedback entry?')) return;
+  await db.from('feedback').delete().eq('id',id);
+  toast('Deleted','success');
+  await renderFeedbackPage();
+}
+
+
 
 // ─── COMMENTS SYSTEM ─────────────────────────────────────────────────────────
 
@@ -871,7 +1137,7 @@ async function renderFeedbackPage(){
 
     el.innerHTML = html;
   }catch(err){
-    el.innerHTML = errBox(err.message);
+    el.innerHTML=errBox(err.message, err.stack);
   }
 }
 
@@ -925,16 +1191,16 @@ async function deleteFeedback(id){
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 async function renderDashboard(){
   const el=document.getElementById('view-dashboard');
-  if(!_cache.dashboard) el.innerHTML=viewLoading('Loading dashboard...');
+  if(!null) el.innerHTML=viewLoading('Loading dashboard...');
   let totalParts=0,totalVehicles=0,parts=[],reminders=[];
   try{
     // Use cached inventory if available, only re-fetch reminders (time-sensitive)
-    let inv = await fetchInventory();
+    let inv = await getInventory();
     // Use cached reminders — refreshed in background by refreshFromSupabase
-    reminders = _cache.reminders || [];
+    reminders = _session.reminders || [];
     parts = inv;
     totalParts = inv.length;
-    const veh = await fetchVehicles();
+    const veh = await getVehicles();
     totalVehicles = veh.length;
     // Check for vehicles with stale photos (oldest current photo > 1 year)
     var oneYearAgo=new Date();oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
@@ -949,8 +1215,8 @@ async function renderDashboard(){
         }
       });
     }catch(e){}
-    _cache.dashboard = {totalParts, totalVehicles, parts, reminders, stalePhotoVehicles};
-  }catch(err){el.innerHTML=errBox(err.message);console.error('Dashboard error:',err);return;}
+    // dashboard data assembled
+  }catch(err){el.innerHTML=errBox(err.message, err.stack);console.error('Dashboard error:',err);return;}
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
@@ -963,7 +1229,7 @@ async function renderDashboard(){
   </div>
   ${upcoming.length>0?`<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⚠️ Upcoming Maintenance</div>${upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('')}</div>`:''}
   ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
-  ${(_cache.dashboard?.stalePhotoVehicles||[]).length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${(_cache.dashboard.stalePhotoVehicles||[]).map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
+  ${(null?.stalePhotoVehicles||[]).length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${(null.stalePhotoVehicles||[]).map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -973,12 +1239,12 @@ async function renderPartsPage(){
   var el=document.getElementById('view-parts');
   if(!el){ console.error('view-parts element missing'); return; }
   // Only show loading spinner if we have nothing cached yet
-  if(!_cache.inventory) el.innerHTML=viewLoading('Loading parts...');
+  if(!_session.inventory) el.innerHTML=viewLoading('Loading parts...');
   try{
-    dbInventory = await fetchInventory();
+    dbInventory = await getInventory();
     renderPartsList(el);
   }catch(err){
-    el.innerHTML = errBox(err.message);
+    el.innerHTML=errBox(err.message, err.stack);
     console.error('renderPartsPage error:', err);
   }
 }
@@ -987,7 +1253,7 @@ function renderPartsList(el){
   if(!el) el=document.getElementById('view-parts');
   try{
   // Use cache as source of truth - dbInventory may be stale
-  const invSource = _cache.inventory || dbInventory || [];
+  const invSource = _session.inventory || dbInventory || [];
   dbInventory = invSource;
   // Build combined list: GMT800 catalog + custom DB parts not in catalog
   const catalogIds=new Set(_catalog.map(p=>p.id));
@@ -1101,7 +1367,7 @@ async function showPartProfile(id, type){
 // Finds oldest inventory item of this part and opens install modal for the given vehicle
 async function startInstallForVehicle(vehicleId, cpId){
   // Find inventory items for this catalog part, sorted oldest first
-  var items = (_cache.inventory||[]).filter(function(p){return p.catalog_part_id===cpId && p.quantity>0;});
+  var items = (_session.inventory||[]).filter(function(p){return p.catalog_part_id===cpId && p.quantity>0;});
   items.sort(function(a,b){return (a.date_acquired||'').localeCompare(b.date_acquired||'');});
   if(items.length===0){
     toast('No inventory of this part to install - add one first','error');
@@ -1589,8 +1855,8 @@ async function saveLocation(partId,location){
   const{error}=await db.from('parts').update({shelf_location:location,scanned_to_location_at:new Date().toISOString()}).eq('id',partId);
   if(error){toast(error.message,'error');return}
   toast('Location saved!','success');closeModal();
-  invalidate('inventory','dashboard');
-  fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
+  invalidate();
+  getInventory().then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
 function showAddLocationPrompt(){
@@ -1910,8 +2176,8 @@ async function savePartFromWizard(source,prefix,lowStockThreshold){
   toast('Part added to inventory! 🎉','success');
   window._aiReceiptFile=null;
   closeModal();
-  invalidate('inventory','dashboard');
-  fetchInventory(true).then(inv=>{dbInventory=inv;renderPartsList();});
+  invalidate();
+  getInventory().then(inv=>{dbInventory=inv;renderPartsList();});
 }
 
 // ─── ADD SPECIFIC PART (from profile) ────────────────────────────────────────
@@ -1971,10 +2237,10 @@ async function saveEditInventory(id){
   if(error){toast(error.message,'error');return}
   toast('Updated!','success');closeModal();
   // Update in-memory cache without a new Supabase fetch
-  _cache.inventory=null; // will re-fetch on next renderPartsPage
-  _cache.dashboard=null;
-  try{localStorage.removeItem(LS_KEY);}catch(e){} // force fresh load next time
-  dbInventory=await fetchInventory(true);
+  _session.inventory=null; // will re-fetch on next renderPartsPage
+    // (cache cleared)
+    // (no localStorage cache to clear)
+  dbInventory=await getInventory();
   renderPartsList();
 }
 
@@ -1983,13 +2249,13 @@ async function confirmDeleteInv(id,name){
   const{error}=await db.from('parts').delete().eq('id',id);
   if(error){toast(error.message,'error');return;}
   // Remove from in-memory cache immediately without hitting Supabase again
-  _cache.inventory=(_cache.inventory||[]).filter(function(p){return p.id!==id;});
-  _cache.dashboard=null;
-  dbInventory=_cache.inventory;
+  _session.inventory=(_session.inventory||[]).filter(function(p){return p.id!==id;});
+    // (cache cleared)
+  dbInventory=_session.inventory;
   // Save updated cache to localStorage right away
   try{
     var stored=JSON.parse(localStorage.getItem(LS_KEY)||'{}');
-    if(stored.data){stored.data.inventory=_cache.inventory;stored.ts=Date.now();localStorage.setItem(LS_KEY,JSON.stringify(stored));}
+    // (no localStorage cache)
   }catch(e){}
   toast('Removed from inventory','success');
   closeModal();
@@ -2009,10 +2275,10 @@ async function renderVehicles(){
   const el=document.getElementById('view-vehicles');
   let vehicles=[];
   try{
-    if(!_cache.vehicles) el.innerHTML=viewLoading('Loading vehicles...');
-    vehicles=await fetchVehicles();
+    if(!_session.vehicles) el.innerHTML=viewLoading('Loading vehicles...');
+    vehicles=await getVehicles();
   }catch(err){
-    el.innerHTML=errBox(err.message);
+    el.innerHTML=errBox(err.message, err.stack);
     console.error(err);
     return;
   }
@@ -2361,9 +2627,9 @@ async function deleteVehiclePhoto(photoId, vehicleId){
 
 async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
 
-async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate('vehicles','dashboard');closeModal();await refreshVehicleView()}
+async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}toast(id?'Vehicle updated!':'Vehicle added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate('vehicles','dashboard');toast('Deleted','success');await showView('vehicles')}
+async function confirmDeleteVehicle(id,name){if(!confirm(`Delete "${name}" and all history?`))return;await db.from('vehicles').delete().eq('id',id);_currentVehicleProfile={id:null,tab:'overview'};invalidate();toast('Deleted','success');await showView('vehicles')}
 
 async function showLogMileageModal(vehicleId){const{data:v}=await db.from('vehicles').select('year,make,model,current_mileage').eq('id',vehicleId).single();showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Log Mileage</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;padding:12px;background:var(--surface);border-radius:6px;font-size:13px"><strong>${v?`${v.year} ${v.make} ${v.model}`:'Vehicle'}</strong><br><span style="color:var(--text-muted)">Current: <strong>${(v?.current_mileage||0).toLocaleString()} mi</strong></span></div><div class="form-group"><label>New Mileage Reading *</label><input type="number" class="form-control" id="ml-miles" placeholder="e.g. 155000"></div><div class="form-group"><label>Note</label><input type="text" class="form-control" id="ml-note" placeholder="e.g. After road trip"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="logMileage('${vehicleId}')">Log Mileage</button></div></div></div>`)}
 
@@ -2373,10 +2639,10 @@ async function showServiceModal(vehicleId){showModal(`<div class="modal-overlay"
 
 async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return toast('Service type required','error');const{error}=await db.from('service_history').insert({vehicle_id:vehicleId,service_type:t,description:val('sr-desc')||null,performed_date:val('sr-date')||null,mileage_at_service:parseInt(document.getElementById('sr-miles').value)||null,performed_by:val('sr-by')||null,notes:val('sr-notes')||null});if(error){toast(error.message,'error');return}toast('Record added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
 
 async function showInstallPartModal(invId, cpId, partName, condition, location){
-  var compatVehicles=_cache.vehicles||[];
+  var compatVehicles=_session.vehicles||[];
   if(cpId){
     var cp=_catalog.find(function(p){return p.id===cpId;});
     if(cp&&cp.fits!=='all'){
@@ -2393,7 +2659,7 @@ async function showInstallPartModal(invId, cpId, partName, condition, location){
     partField='<input type="hidden" id="ip-part" value="'+invId+'">';
   } else {
     var invOpts='<option value="">Select...</option>';
-    (_cache.inventory||[]).filter(function(p){return p.quantity>0;}).sort(function(a,b){return(a.date_acquired||'').localeCompare(b.date_acquired||'');}).forEach(function(p){invOpts+='<option value="'+p.id+'">'+esc(p.name)+(p.part_number?' #'+esc(p.part_number):'')+'</option>';});
+    (_session.inventory||[]).filter(function(p){return p.quantity>0;}).sort(function(a,b){return(a.date_acquired||'').localeCompare(b.date_acquired||'');}).forEach(function(p){invOpts+='<option value="'+p.id+'">'+esc(p.name)+(p.part_number?' #'+esc(p.part_number):'')+'</option>';});
     partField='<div class="form-group"><label>Part from Inventory *</label><select class="form-control" id="ip-part">'+invOpts+'</select></div>';
   }
   showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:500px"><div class="modal-header"><div class="modal-title">Install Part</div><button class="close-btn" onclick="closeModal()">&times;</button></div><div class="modal-body">'+partDisplay+partField+'<div class="form-group"><label>Install On *</label><select class="form-control" id="ip-vehicle">'+opts+'</select></div><div class="grid-2"><div class="form-group"><label>Date Installed</label><input type="date" class="form-control" id="ip-date" value="'+new Date().toISOString().split('T')[0]+'"></div><div class="form-group"><label>Mileage at Install</label><input type="number" class="form-control" id="ip-miles" placeholder="e.g. 155000"></div></div><div class="form-group"><label>How Long Did It Take?</label><input type="text" class="form-control" id="ip-time" placeholder="e.g. 2 hrs, 45 min"></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="ip-notes" rows="2"></textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveInstallFromModal()">Install Part</button></div></div></div>');
@@ -2421,7 +2687,7 @@ async function saveInstall(vehicleId){
   if(error){toast(error.message,'error');return;}
   const newQty=(p&&p.quantity>0)?p.quantity-1:0;
   if(p&&p.quantity>0) await db.from('parts').update({quantity:newQty}).eq('id',partId);
-  invalidate('inventory','vehicles','dashboard');
+  invalidate();
   closeModal();
   toast('Part installed!','success');
   if(newQty===0){
@@ -2446,13 +2712,13 @@ function toggleRF(){const t=document.getElementById('mr-type').value;document.ge
 
 async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate();await refreshVehicleView()}
 
 async function showSnoozeModal(reminderId,title){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Snooze Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Snoozing: <strong style="color:var(--text)">${esc(title)}</strong></div><div class="form-group"><label>Snooze Until Date</label><input type="date" class="form-control" id="sn-date"></div><div style="text-align:center;color:var(--text-dim);font-size:12px;margin:4px 0"> -  or  - </div><div class="form-group"><label>Snooze Until Mileage</label><input type="number" class="form-control" id="sn-miles"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="snoozeReminder('${reminderId}')">Snooze</button></div></div></div>`)}
 
 async function snoozeReminder(id){const sd=val('sn-date')||null,sm=parseInt(document.getElementById('sn-miles').value)||null;if(!sd&&!sm)return toast('Enter date or mileage','error');await db.from('maintenance_reminders').update({snoozed_until_date:sd,snoozed_until_mileage:sm}).eq('id',id);toast('Snoozed!','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate('vehicles','dashboard');await refreshVehicleView()}
+async function deleteReminder(id){if(!confirm('Delete reminder?'))return;await db.from('maintenance_reminders').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
 
 // ─── VEHICLE TAB RENDERERS ────────────────────────────────────────────────────
 
@@ -2596,10 +2862,10 @@ async function renderWishlist(){
 
   let items=[];
   try{
-    if(!_cache.wishlist) el.innerHTML=viewLoading('Loading wishlist...');
-    items=await fetchWishlist();
+    if(!_session.wishlist) el.innerHTML=viewLoading('Loading wishlist...');
+    items=await getWishlist();
   }catch(err){
-    el.innerHTML=errBox(err.message);
+    el.innerHTML=errBox(err.message, err.stack);
     console.error(err);
     return;
   }
@@ -2774,7 +3040,7 @@ async function saveWishlistItem(id){
   }
   if(error){ toast(error.message,'error'); return; }
   toast(id?'Updated!':'Added to wishlist!','success');
-  invalidate('wishlist');
+  invalidateWishlist();
   closeModal();
   await renderWishlist();
 }
@@ -2923,6 +3189,6 @@ async function deleteWishlistItem(id){
   if(!confirm('Remove from wishlist?')) return;
   await db.from('wishlist').delete().eq('id',id);
   toast('Removed','success');
-  invalidate('wishlist');
+  invalidateWishlist();
   await renderWishlist();
 }
