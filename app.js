@@ -549,11 +549,6 @@ async function renderUsersPanel(){
       html += '<div style="width:40px;height:40px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:18px;font-family:Bebas Neue,sans-serif;color:#000;flex-shrink:0">'+esc((u.display_name||u.username||'?').charAt(0).toUpperCase())+'</div>';
       html += '<div style="flex:1">';
       html += '<div style="font-weight:600;color:'+ucolor+'">'+esc(u.display_name||u.username||'Unknown')+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
-<<<<<<< HEAD
-      html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
-=======
-      html += '<div style="font-size:12px;color:var(--text-muted)">'+esc(u.display_name||u.username||'No name set')+'</div>';
->>>>>>> 25223077dafb1dadce56c456562a0261d28f733d
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       html += '</div>';
