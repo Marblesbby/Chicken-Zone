@@ -497,6 +497,16 @@ async function renderUserProfile(){
   if(role==='tester' && resetReq){
     html += '<div style="margin-left:auto;font-size:12px;color:var(--warning);align-self:center">⏳ Reset requested — waiting for admin</div>';
   }
+  html += '</div>';
+
+  // Role update via invite code
+  html += '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">';
+  html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px">Update Role with Invite Code</div>';
+  html += '<div style="display:flex;gap:8px">';
+  html += '<input type="text" class="form-control" id="profile-invite-code" placeholder="Enter invite code" style="text-transform:uppercase;flex:1">';
+  html += '<button class="btn btn-secondary" onclick="applyInviteCodeFromProfile()">Apply</button>';
+  html += '</div>';
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">Current role: <strong style="color:var(--accent)">'+esc(role)+'</strong></div>';
   html += '</div></div>';
 
   html += '</div>';
@@ -524,6 +534,21 @@ async function requestReTest(){
   await renderUserProfile();
 }
 
+// _____Self Invite Code Swap-------------------------------------------------
+async function applyInviteCodeFromProfile(){
+  var code = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!code) return toast('Enter an invite code','error');
+  var icRes = await db.from('invite_codes').select('*').eq('code',code).eq('is_active',true).single();
+  if(icRes.error || !icRes.data) return toast('Invalid or expired invite code','error');
+  var newRole = icRes.data.role;
+  var{error} = await db.from('profiles').update({role:newRole}).eq('id',currentUser.id);
+  if(error){ toast(error.message,'error'); return; }
+  await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id',icRes.data.id);
+  _currentUserProfile = Object.assign({},_currentUserProfile,{role:newRole});
+  _isAdmin = newRole === 'admin';
+  toast('Role updated to '+newRole+'!','success');
+  await renderUserProfile();
+}
 // ─── ADMIN: USERS PANEL ──────────────────────────────────────────────────────
 
 async function renderUsersPanel(){
