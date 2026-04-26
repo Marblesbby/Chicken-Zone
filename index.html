@@ -64,7 +64,7 @@
           autocomplete="new-password">
       </div>
       <div class="form-group">
-        <label>Invite Code (required)</label>
+        <label>Invite Code (optional)</label>
         <input type="text" class="form-control" id="reg-invite" placeholder="Enter your invite code" style="text-transform:uppercase">
       </div>
       <button class="btn btn-primary btn-block mt-16" onclick="signUp()" type="button">Create Account</button>
@@ -102,12 +102,20 @@
       <button class="btn btn-ghost btn-block btn-sm" onclick="showView('profile')" style="margin-bottom:4px">👤 My Profile</button>
       <div id="admin-nav" style="display:none">
         <button class="btn btn-ghost btn-block btn-sm" onclick="showView('users')" style="margin-bottom:4px">🛡️ Users</button>
+        <select onchange="setViewAs(this.value)" style="width:100%;padding:6px;border-radius:6px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-size:11px;margin-bottom:4px" title="Preview as a different role">
+          <option value="actual">👁️ View as: Admin (you)</option>
+          <option value="owner">View as: Owner</option>
+          <option value="guest">View as: Guest</option>
+          <option value="tester">View as: Tester</option>
+          <option value="viewer">View as: Viewer</option>
+        </select>
       </div>
       <button class="btn btn-secondary btn-block btn-sm" onclick="signOut()">Sign Out</button>
     </div>
   </div>
 
   <div id="main-content">
+    <div id="view-as-banner" style="display:none;background:rgba(100,100,200,.15);border-bottom:1px solid rgba(100,100,200,.3);padding:8px 16px;text-align:center;font-size:13px"></div>
     <div id="view-dashboard"></div>
     <div id="view-parts"          style="display:none"></div>
     <div id="view-part-profile"   style="display:none"></div>

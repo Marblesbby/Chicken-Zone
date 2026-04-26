@@ -29,6 +29,8 @@ var AVATAR_EMOJIS = ['🐇','🐄','🐖','🐎','🐑','🐓','🦆','🐕','�
 // Single source of truth. All reads go through here. Nothing persists to localStorage.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
+var LS_CATALOG_KEY = 'cz_catalog_v1';  // only catalog, nothing else
+
 var currentUser          = null;
 var _currentUserProfile  = null;
 var _isAdmin             = false;
@@ -157,8 +159,10 @@ function withTimeout(promise, ms){
 // ─── ERROR DISPLAY ───────────────────────────────────────────────────────────────────────────
 // Shows a friendly error box with refresh and optional bug report buttons
 function errBox(msg, techDetail){
+  // Use a global to pass the error to the bug report instead of inline JSON.stringify (which breaks HTML)
+  if(currentUser){ window._lastErrorForBug = {msg:msg, view:_currentView}; }
   var reportBtn = currentUser
-    ? '<button class="btn btn-secondary btn-sm" onclick="openBugReport('+JSON.stringify(msg)+','+JSON.stringify(_currentView)+')">&#x1F41B; Report Bug</button>'
+    ? '<button class="btn btn-secondary btn-sm" onclick="openBugReportFromError()">&#x1F41B; Report Bug</button>'
     : '';
   return '<div style="padding:40px 32px">' +
     '<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6">' +
@@ -262,27 +266,66 @@ window.addEventListener('hashchange', function(){
 // ─── CATALOG LOAD — runs once on login ───────────────────────────────────────────────────────
 async function loadCatalog(){
   if(_session.catalog) return; // already loaded this session
-  var results = await withTimeout(Promise.all([
-    db.from('catalog_parts').select('id,name,category,subcategory,oem_number,aftermarket_ref,failure_rank,fits').order('failure_rank'),
-    db.from('part_details').select('*')
-  ]), 15000);
-  if(results[0].error) throw new Error('Catalog failed: ' + results[0].error.message);
-  _catalog = (results[0].data || []).map(function(row){
-    return {
-      id:row.id, name:row.name, cat:row.category, sub:row.subcategory||'',
-      oem:row.oem_number||'', afm:row.aftermarket_ref||'',
-      rank:row.failure_rank||999, fits:row.fits||'all', desc:''
-    };
-  });
-  _partDetails = {};
-  (results[1].data || []).forEach(function(row){
-    _partDetails[row.catalog_part_id] = {
-      time:row.estimated_time||'', tools:row.tools||[],
-      hardware:row.hardware||[], tip:row.pro_tip||''
-    };
-  });
-  _session.catalog = true;
-  console.log('Catalog loaded: ' + _catalog.length + ' parts');
+  // Try localStorage first — catalog only changes when admin edits part info
+  try {
+    var cached = localStorage.getItem(LS_CATALOG_KEY);
+    if(cached){
+      var parsed = JSON.parse(cached);
+      if(parsed && parsed.catalog && parsed.catalog.length > 0 && parsed.partDetails){
+        _catalog = parsed.catalog;
+        _partDetails = parsed.partDetails;
+        _session.catalog = true;
+        console.log('Catalog from cache: ' + _catalog.length + ' parts');
+        // Refresh in background
+        refreshCatalogFromSupabase();
+        return;
+      }
+    }
+  } catch(e){
+    try { localStorage.removeItem(LS_CATALOG_KEY); } catch(le){}
+  }
+  await refreshCatalogFromSupabase();
+}
+
+async function refreshCatalogFromSupabase(){
+  try {
+    var results = await withTimeout(Promise.all([
+      db.from('catalog_parts').select('id,name,category,subcategory,oem_number,aftermarket_ref,failure_rank,fits').order('failure_rank'),
+      db.from('part_details').select('*')
+    ]), 8000);
+    if(results[0].error) throw new Error('Catalog failed: ' + results[0].error.message);
+    _catalog = (results[0].data || []).map(function(row){
+      return {
+        id:row.id, name:row.name, cat:row.category, sub:row.subcategory||'',
+        oem:row.oem_number||'', afm:row.aftermarket_ref||'',
+        rank:row.failure_rank||999, fits:row.fits||'all', desc:''
+      };
+    });
+    _partDetails = {};
+    (results[1].data || []).forEach(function(row){
+      _partDetails[row.catalog_part_id] = {
+        time:row.estimated_time||'', tools:row.tools||[],
+        hardware:row.hardware||[], tip:row.pro_tip||''
+      };
+    });
+    _session.catalog = true;
+    console.log('Catalog refreshed: ' + _catalog.length + ' parts');
+    try {
+      localStorage.setItem(LS_CATALOG_KEY, JSON.stringify({catalog:_catalog, partDetails:_partDetails}));
+    } catch(e){ /* quota — skip cache */ }
+  } catch(e){
+    if(_session.catalog){
+      console.warn('Background catalog refresh failed:', e.message);
+      return;
+    }
+    throw e;
+  }
+}
+
+// Wipe catalog cache when admin edits a catalog part
+function invalidateCatalog(){
+  _session.catalog = false;
+  try { localStorage.removeItem(LS_CATALOG_KEY); } catch(e){}
 }
 
 // ─── ON-DEMAND FETCHERS — each view calls what it needs ──────────────────────────────────────
@@ -344,6 +387,38 @@ async function getPartDescription(catalogId){
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // ─── AUTHENTICATION ─────────────────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+// ─── ADMIN VIEW-AS MODE ──────────────────────────────────────────────────────────────────────
+// Admin can preview what each role sees without losing admin access
+var _viewAsRole = null;
+
+function getEffectiveRole(){
+  if(_viewAsRole && _isAdmin) return _viewAsRole;
+  return (_currentUserProfile && _currentUserProfile.role) || 'viewer';
+}
+
+function getEffectiveAdmin(){
+  if(_viewAsRole && _isAdmin) return _viewAsRole === 'admin';
+  return _isAdmin;
+}
+
+async function setViewAs(role){
+  _viewAsRole = role === 'actual' ? null : role;
+  var adminNav = document.getElementById('admin-nav');
+  if(adminNav) adminNav.style.display = getEffectiveAdmin() ? 'block' : 'none';
+  var banner = document.getElementById('view-as-banner');
+  if(banner){
+    if(_viewAsRole){
+      banner.innerHTML = '\u{1F441}\uFE0F Viewing as <strong>'+_viewAsRole+'</strong> <button class="btn btn-ghost btn-sm" onclick="setViewAs(\'actual\')" style="margin-left:8px;font-size:11px">Exit</button>';
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+  var parsed = parseHash(window.location.hash);
+  await showView(parsed.view || 'dashboard', parsed.arg);
+}
 
 var _appInitialized = false;
 db.auth.onAuthStateChange(async function(event, session){
@@ -576,15 +651,23 @@ async function renderUserProfile(){
   html += '<div class="card" style="margin-bottom:20px">';
   html += '<div style="text-align:center;margin-bottom:20px">';
   var currentEmoji = p.avatar_emoji || '🐇';
-  html += '<div style="position:relative;width:80px;margin:0 auto 12px">';
-  html += '<div style="width:80px;height:80px;border-radius:50%;background:'+ucolor+';display:flex;align-items:center;justify-content:center;font-size:40px">'+currentEmoji+'</div>';
-  html += '</div>';
+  html += '<div style="width:80px;height:80px;border-radius:50%;background:#fff;border:3px solid '+ucolor+';margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:42px">'+currentEmoji+'</div>';
   html += '<div style="display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
-  html += AVATAR_EMOJIS.map(function(e){ return '<button onclick="selectAvatar(\''+e+'\')" style="background:'+(e===currentEmoji?ucolor:'var(--surface)')+';border:2px solid '+(e===currentEmoji?ucolor:'var(--border)')+';border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;transition:all .2s">'+e+'</button>'; }).join('');
+  html += AVATAR_EMOJIS.map(function(e){
+    var sel = e===currentEmoji;
+    return '<button onclick="selectAvatar(\''+e+'\')" style="background:#fff;border:'+(sel?'3px solid '+ucolor:'2px solid var(--border)')+';border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;padding:0">'+e+'</button>';
+  }).join('');
   html += '</div>';
   html += '<input type="hidden" id="up-avatar" value="'+currentEmoji+'">';
   html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:700;color:'+ucolor+'">'+esc(dname)+'</div>';
+  html += '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px">';
   html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(role)+'</div>';
+  if(p.requested_role){
+    html += '<span style="font-size:11px;color:var(--warning)">Pending: '+esc(p.requested_role)+'</span>';
+  } else if(role !== 'admin'){
+    html += '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px" onclick="showRequestRoleModal()">Request Role</button>';
+  }
+  html += '</div>';
   html += '</div>';
 
   html += '<div class="form-group"><label>Display Name</label>';
@@ -643,17 +726,23 @@ async function applyInviteCodeFromProfile(){
 
 function selectAvatar(emoji){
   document.getElementById('up-avatar').value = emoji;
-  // Update all buttons
-  var buttons = document.querySelectorAll('[onclick^="selectAvatar"]');
   var color = document.getElementById('up-color').value || '#FFD700';
+  // Update tiny emoji buttons - all white background, ring on selected
+  var buttons = document.querySelectorAll('[onclick^="selectAvatar"]');
   buttons.forEach(function(btn){
     var isSelected = btn.textContent === emoji;
-    btn.style.background = isSelected ? color : 'var(--surface)';
-    btn.style.borderColor = isSelected ? color : 'var(--border)';
+    btn.style.background = '#fff';
+    btn.style.border = isSelected ? '3px solid '+color : '2px solid var(--border)';
   });
-  // Update preview circle
+  // Update large preview circle - white bg, color ring
   var circles = document.querySelectorAll('[style*="border-radius:50%"][style*="width:80px"]');
-  circles.forEach(function(c){ if(c.style.fontSize==='40px') c.textContent = emoji; });
+  circles.forEach(function(c){
+    if(c.style.fontSize==='42px' || c.style.fontSize==='40px'){
+      c.textContent = emoji;
+      c.style.background = '#fff';
+      c.style.border = '3px solid '+color;
+    }
+  });
 }
 
 async function saveUserProfile(){
@@ -705,11 +794,16 @@ async function renderUsersPanel(){
       html += '<div style="font-weight:600;color:'+ucolor+'">'+(function(){ if(!u.display_name && !u.username){ unknownCount++; return 'Unknown '+unknownCount; } return esc(u.display_name||u.username||'Unknown'); })()+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
+      if(u.requested_role) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px;cursor:help" title="Reason: '+esc(u.request_reason||'No reason given')+'">🚩 Requesting: '+esc(u.requested_role)+'</div>';
       html += '</div>';
       if(!isMe){
         html += '<div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">';
         // Role selector
         html += '<button class="btn btn-ghost btn-sm" onclick="setAdminNickname(\''+u.id+'\')">&#x270F;&#xFE0F; Nickname</button>';
+        if(u.requested_role){
+          html += '<button class="btn btn-primary btn-sm" onclick="approveRoleRequest(\''+u.id+'\',\''+u.requested_role+'\')">✅ Approve '+u.requested_role+'</button>';
+          html += '<button class="btn btn-ghost btn-sm" onclick="denyRoleRequest(\''+u.id+'\')">Deny</button>';
+        }
         html += '<select class="form-control" style="width:auto;font-size:12px" onchange="setUserRole(\''+u.id+'\',this.value)">';
         ['admin','owner','guest','tester'].forEach(function(r){
           html += '<option value="'+r+'"'+(u.role===r?' selected':'')+'>'+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';
@@ -800,6 +894,53 @@ async function setAdminNickname(userId){
   await renderUsersPanel();
 }
 
+
+// ─── ROLE REQUEST ─────────────────────────────────────────────────────────────────────────────
+function showRequestRoleModal(){
+  showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Request a Role</div><button class="close-btn" onclick="closeModal()">&times;</button></div><div class="modal-body"><div class="form-group"><label>Requested Role</label><select class="form-control" id="rr-role"><option value="owner">Owner</option><option value="guest">Guest</option><option value="tester">Tester</option></select></div><div class="form-group"><label>Reason</label><textarea class="form-control" id="rr-reason" rows="3" placeholder="Why are you requesting this role?"></textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitRoleRequest()">Submit Request</button></div></div></div>');
+}
+
+async function submitRoleRequest(){
+  var role = val('rr-role');
+  var reason = val('rr-reason');
+  if(!reason) return toast('Please provide a reason','error');
+  var{error} = await db.from('profiles').update({
+    requested_role: role,
+    request_reason: reason,
+    request_at: new Date().toISOString()
+  }).eq('id', currentUser.id);
+  if(error){ toast(error.message,'error'); return; }
+  if(_currentUserProfile){
+    _currentUserProfile.requested_role = role;
+    _currentUserProfile.request_reason = reason;
+  }
+  toast('Request submitted! Admin will review it soon.','success');
+  closeModal();
+  await renderUserProfile();
+}
+
+async function approveRoleRequest(userId, role){
+  if(!confirm('Approve role change to '+role+'?')) return;
+  await db.from('profiles').update({
+    role: role,
+    requested_role: null,
+    request_reason: null
+  }).eq('id', userId);
+  toast('Role approved','success');
+  await renderUsersPanel();
+}
+
+async function denyRoleRequest(userId){
+  if(!confirm('Deny this role request?')) return;
+  await db.from('profiles').update({
+    requested_role: null,
+    request_reason: null
+  }).eq('id', userId);
+  toast('Request denied','info');
+  await renderUsersPanel();
+}
+
+
 async function setUserRole(userId, role){
   var{error} = await db.from('profiles').update({role:role}).eq('id', userId);
   if(error){ toast(error.message,'error'); return; }
@@ -865,18 +1006,45 @@ async function renderFeedbackPage(){
     if(res.error) throw new Error(res.error.message);
     var allFeedback = res.data || [];
     var myFeedback  = allFeedback.filter(function(f){ return f.user_id === currentUser.id; });
-    var displayList = _isAdmin ? allFeedback : myFeedback;
+
+    // Known bugs = published, not yet resolved
+    var knownBugs = allFeedback.filter(function(f){
+      return f.is_published && !f.is_resolved && f.type === 'Bug Report';
+    });
+    // Squashed bugs = published AND resolved
+    var squashedBugs = allFeedback.filter(function(f){
+      return f.is_published && f.is_resolved && f.type === 'Bug Report';
+    });
 
     var html = '<div class="page-header"><div style="text-align:center;flex:1">';
     html += '<div class="page-title" style="font-size:42px">Feedback</div>';
     html += '<div class="page-subtitle" style="font-size:12px">Bug Reports & Feature Suggestions</div>';
     html += '</div></div>';
 
-    // Submit form
+    // ── KNOWN BUGS SECTION ─────────────────────────────────────────────
+    if(knownBugs.length > 0){
+      html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--warning)">';
+      html += '<div class="stat-label" style="margin-bottom:12px;color:var(--warning)">&#x1F41B; Known Bugs ('+knownBugs.length+')</div>';
+      knownBugs.forEach(function(b){
+        html += renderKnownBug(b, false);
+      });
+      html += '</div>';
+    }
+
+    // ── SQUASHED BUGS SECTION (collapsible) ────────────────────────────
+    if(squashedBugs.length > 0){
+      html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--success)">';
+      html += '<div class="stat-label" style="margin-bottom:12px;color:var(--success);cursor:pointer" onclick="document.getElementById(\'squashed-list\').style.display=document.getElementById(\'squashed-list\').style.display===\'none\'?\'block\':\'none\'">&#x2705; Squashed Bugs ('+squashedBugs.length+') &#x25BC;</div>';
+      html += '<div id="squashed-list" style="display:none">';
+      squashedBugs.forEach(function(b){
+        html += renderKnownBug(b, true);
+      });
+      html += '</div></div>';
+    }
+
+    // ── SUBMIT FORM ───────────────────────────────────────────────────
     html += '<div class="card" style="margin-bottom:24px">';
     html += '<div class="stat-label" style="margin-bottom:14px">Submit Feedback</div>';
-
-    // Type selector
     html += '<div class="form-group"><label>Type</label>';
     html += '<select class="form-control" id="fb-type" onchange="updateFeedbackForm()">';
     html += '<option value="">Select type...</option>';
@@ -884,57 +1052,21 @@ async function renderFeedbackPage(){
       html += '<option value="'+t+'">'+t+'</option>';
     });
     html += '</select></div>';
-
-    // Location selector
     html += '<div class="form-group"><label>Location (which page?)</label>';
     html += '<select class="form-control" id="fb-location">';
     html += '<option value="">Select page...</option>';
     FEEDBACK_LOCATIONS.forEach(function(l){ html += '<option value="'+l+'">'+l+'</option>'; });
     html += '</select></div>';
-
-    // Dynamic fields container
     html += '<div id="fb-dynamic-fields"></div>';
-
     html += '<button class="btn btn-primary" onclick="submitFeedback()" style="margin-top:8px">Submit</button>';
     html += '</div>';
 
-    // Submissions list
+    // ── MY SUBMISSIONS / ALL SUBMISSIONS (admin only) ────────────────
+    var displayList = _isAdmin ? allFeedback : myFeedback;
     if(displayList.length > 0){
       html += '<div class="stat-label" style="margin-bottom:14px">'+(_isAdmin?'All Submissions ('+allFeedback.length+')':'My Submissions')+'</div>';
       displayList.forEach(function(f){
-        var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
-        var typeIcon = f.type==='Bug Report'?'&#x1F41B;':f.type==='New Feature'?'&#x1F4A1;':f.type==='Improvement'?'&#x1F527;':f.type==='UI / Visual'?'&#x1F3A8;':'&#x26A1;';
-        html += '<div class="card" style="margin-bottom:10px">';
-        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
-        html += '<div style="flex:1">';
-        if(_isAdmin) html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
-        html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.type||'Feedback')+(f.location?' <span style="font-size:11px;color:var(--text-muted)">— '+esc(f.location)+'</span>':'')+'</div>';
-        if(f.title) html += '<div style="font-size:13px;margin-top:4px">'+esc(f.title)+'</div>';
-        if(f.description) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description)+'</div>';
-        // Show structured fields for admin
-        if(_isAdmin && f.extra_fields){
-          try{
-            var extra = JSON.parse(f.extra_fields);
-            Object.keys(extra).forEach(function(k){
-              if(extra[k]) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px"><strong>'+esc(k)+':</strong> '+esc(extra[k])+'</div>';
-            });
-          }catch(e){}
-        }
-        if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
-        html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
-        html += '</div>';
-        html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
-        html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+(f.status||'new').replace('_',' ')+'</span>';
-        if(_isAdmin){
-          html += '<select class="form-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
-          ['new','in_progress','done','wont_fix'].forEach(function(s){
-            html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';
-          });
-          html += '</select>';
-          html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">&#x1F4DD; Note</button>';
-          html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
-        }
-        html += '</div></div></div>';
+        html += renderFeedbackEntry(f);
       });
     } else {
       html += '<div class="empty-state"><div class="empty-icon">&#x1F4AC;</div><p>No feedback submitted yet</p></div>';
@@ -946,7 +1078,113 @@ async function renderFeedbackPage(){
   }
 }
 
-// ─── DYNAMIC FORM FIELDS BASED ON TYPE ───────────────────────────────────────────────────────
+// ─── KNOWN BUG DISPLAY ────────────────────────────────────────────────────────────────────────
+function renderKnownBug(b, isSquashed){
+  var html = '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">';
+  html += '<div style="flex:1;min-width:200px">';
+  html += '<div style="font-weight:600;font-size:14px">'+esc(b.title || 'Bug')+'</div>';
+  if(b.location) html += '<div style="font-size:11px;color:var(--text-muted)">Location: '+esc(b.location)+'</div>';
+  if(b.extra_fields){
+    try{
+      var ex = JSON.parse(b.extra_fields);
+      if(ex.Severity) html += '<div style="font-size:11px;color:var(--text-muted)">Severity: '+esc(ex.Severity)+'</div>';
+    }catch(e){}
+  }
+  if(b.description) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(b.description)+'</div>';
+  if(isSquashed && b.resolution_message){
+    html += '<div style="font-size:12px;color:var(--success);margin-top:6px;padding:6px;background:rgba(34,197,94,.1);border-radius:4px">&#x2705; '+esc(b.resolution_message)+'</div>';
+  }
+  html += '</div>';
+  if(_isAdmin){
+    html += '<div style="display:flex;flex-direction:column;gap:4px">';
+    html += '<button class="btn btn-ghost btn-sm" onclick="editKnownBug(\''+b.id+'\')">&#x270F;&#xFE0F; Edit</button>';
+    if(!isSquashed){
+      html += '<button class="btn btn-secondary btn-sm" onclick="resolveKnownBug(\''+b.id+'\')">&#x2705; Mark Resolved</button>';
+    }
+    html += '<button class="btn btn-ghost btn-sm" onclick="unpublishKnownBug(\''+b.id+'\')">Unpublish</button>';
+    html += '</div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function renderFeedbackEntry(f){
+  var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
+  var typeIcon = f.type==='Bug Report'?'&#x1F41B;':f.type==='New Feature'?'&#x1F4A1;':f.type==='Improvement'?'&#x1F527;':f.type==='UI / Visual'?'&#x1F3A8;':'&#x26A1;';
+  var html = '<div class="card" style="margin-bottom:10px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+  html += '<div style="flex:1">';
+  if(_isAdmin) html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
+  html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.type||'Feedback')+(f.location?' <span style="font-size:11px;color:var(--text-muted)">— '+esc(f.location)+'</span>':'')+'</div>';
+  if(f.title) html += '<div style="font-size:13px;margin-top:4px">'+esc(f.title)+'</div>';
+  if(f.description) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description)+'</div>';
+  if(_isAdmin && f.extra_fields){
+    try{
+      var extra = JSON.parse(f.extra_fields);
+      Object.keys(extra).forEach(function(k){
+        if(extra[k]) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px"><strong>'+esc(k)+':</strong> '+esc(extra[k])+'</div>';
+      });
+    }catch(e){}
+  }
+  if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
+  if(f.is_published) html += '<div style="font-size:11px;color:var(--warning);margin-top:4px">&#x1F4E2; Published as known bug</div>';
+  html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
+  html += '</div>';
+  html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
+  html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+(f.status||'new').replace('_',' ')+'</span>';
+  if(_isAdmin){
+    html += '<select class="form-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
+    ['new','in_progress','done','wont_fix'].forEach(function(s){
+      html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';
+    });
+    html += '</select>';
+    if(f.type==='Bug Report' && !f.is_published){
+      html += '<button class="btn btn-secondary btn-sm" onclick="publishKnownBug(\''+f.id+'\')">&#x1F4E2; Publish</button>';
+    }
+    html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">&#x1F4DD; Note</button>';
+    html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
+  }
+  html += '</div></div></div>';
+  return html;
+}
+
+// ─── KNOWN BUG ADMIN ACTIONS ──────────────────────────────────────────────────────────────────
+async function publishKnownBug(id){
+  await db.from('feedback').update({is_published:true, updated_at:new Date().toISOString()}).eq('id',id);
+  toast('Published as known bug','success');
+  await renderFeedbackPage();
+}
+
+async function unpublishKnownBug(id){
+  if(!confirm('Remove from Known Bugs?')) return;
+  await db.from('feedback').update({is_published:false}).eq('id',id);
+  toast('Unpublished','success');
+  await renderFeedbackPage();
+}
+
+async function editKnownBug(id){
+  var newTitle = prompt('Edit bug title:');
+  if(newTitle===null) return;
+  await db.from('feedback').update({title:newTitle.trim()}).eq('id',id);
+  toast('Updated','success');
+  await renderFeedbackPage();
+}
+
+async function resolveKnownBug(id){
+  var msg = prompt('Resolution message (will appear on user dashboards):');
+  if(msg===null || !msg.trim()) return;
+  await db.from('feedback').update({
+    is_resolved:true,
+    resolution_message:msg.trim(),
+    status:'done',
+    resolved_at:new Date().toISOString()
+  }).eq('id',id);
+  toast('Marked as resolved — users will see notification on dashboard','success');
+  await renderFeedbackPage();
+}
+
+
 function updateFeedbackForm(){
   var type = val('fb-type');
   var container = document.getElementById('fb-dynamic-fields');
@@ -1002,6 +1240,12 @@ async function submitFeedback(){
 }
 
 // ─── OPEN BUG REPORT PRE-FILLED (called from error box) ──────────────────────────────────────
+
+async function openBugReportFromError(){
+  var info = window._lastErrorForBug || {msg:'', view:'dashboard'};
+  await openBugReport(info.msg, info.view);
+}
+
 async function openBugReport(errorMsg, currentPage){
   await showView('feedback');
   setTimeout(function(){
@@ -1124,7 +1368,11 @@ async function editComment(commentId, containerId, recordType, recordId){
 // ─── TESTER DASHBOARD BUTTON ─────────────────────────────────────────────────
 
 function maybeShowTesterBanner(){
-  var role = _currentUserProfile && _currentUserProfile.role;
+  var role = getEffectiveRole();
+  // Viewer = default — show invite to join
+  if(role === 'viewer'){
+    return '<div class="alert" style="background:rgba(100,100,200,.1);border-color:rgba(100,100,200,.3);margin-bottom:16px;cursor:pointer" onclick="showView(\'profile\')">👀 <strong>You\'re only a spectator!</strong> Tap here to enter an invite code and join the cause.</div>';
+  }
   if(role !== 'tester') return '';
   var resetReq = _currentUserProfile && _currentUserProfile.reset_requested;
   if(resetReq){
@@ -1132,6 +1380,43 @@ function maybeShowTesterBanner(){
   }
   return '<div class="alert" style="background:rgba(100,100,200,.1);border-color:rgba(100,100,200,.3);margin-bottom:16px">🧪 <strong>Tester mode.</strong> <button class="btn btn-secondary btn-sm" onclick="requestReTest()" style="margin-left:8px">Request Data Reset</button></div>';
 }
+
+// ─── BUG RESOLUTION BANNERS ────────────────────────────────────────────────────────────────────
+async function maybeShowResolutionBanners(){
+  if(!currentUser) return '';
+  try{
+    var dismissed = (_currentUserProfile && _currentUserProfile.dismissed_resolutions) || [];
+    var res = await db.from('feedback').select('id,title,resolution_message')
+      .eq('is_published',true).eq('is_resolved',true)
+      .order('resolved_at',{ascending:false}).limit(5);
+    var bugs = (res.data||[]).filter(function(b){ return dismissed.indexOf(b.id) < 0; });
+    if(bugs.length === 0) return '';
+    var html = '';
+    bugs.forEach(function(b){
+      html += '<div class="alert" style="background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+      html += '<span>&#x2705;</span>';
+      html += '<div style="flex:1;min-width:200px">';
+      html += '<strong style="cursor:pointer;color:var(--success)" onclick="showView(\'feedback\')">'+esc(b.title||'Bug Fix')+'</strong>';
+      if(b.resolution_message) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">'+esc(b.resolution_message)+'</div>';
+      html += '</div>';
+      html += '<button class="btn btn-ghost btn-sm" onclick="dismissResolution(\''+b.id+'\')">Dismiss</button>';
+      html += '</div>';
+    });
+    return html;
+  }catch(e){ return ''; }
+}
+
+async function dismissResolution(bugId){
+  var dismissed = (_currentUserProfile && _currentUserProfile.dismissed_resolutions) || [];
+  if(dismissed.indexOf(bugId) < 0) dismissed.push(bugId);
+  await db.from('profiles').update({dismissed_resolutions:dismissed}).eq('id',currentUser.id);
+  if(_currentUserProfile) _currentUserProfile.dismissed_resolutions = dismissed;
+  // Re-render current view
+  var parsed = parseHash(window.location.hash);
+  await showView(parsed.view || 'dashboard', parsed.arg);
+}
+
+
 
 
 // ─── FEEDBACK PAGE ───────────────────────────────────────────────────────────
@@ -1182,17 +1467,18 @@ async function deleteFeedback(id){
 
 // ─── AUTO MAINTENANCE DEFAULTS ────────────────────────────────────────────────────────────────
 // Created automatically when a new vehicle is added
+// reminder_type uses 'mileage' | 'time' | 'both' (DB constraint)
 var AUTO_MAINTENANCE = [
-  {title:'Oil Change',          interval_miles:5000,  interval_days:180},
-  {title:'Tire Rotation',       interval_miles:7500,  interval_days:180},
-  {title:'Air Filter (Engine)', interval_miles:15000, interval_days:365},
-  {title:'Cabin Air Filter',    interval_miles:15000, interval_days:365},
-  {title:'Spark Plugs',         interval_miles:30000, interval_days:null},
-  {title:'Coolant Check',       interval_miles:30000, interval_days:730},
-  {title:'Brake Fluid',         interval_miles:null,  interval_days:730},
-  {title:'Windshield Wipers',   interval_miles:null,  interval_days:365},
-  {title:'Wiper Fluid',         interval_miles:null,  interval_days:90},
-  {title:'Battery Check',       interval_miles:null,  interval_days:730},
+  {title:'Oil Change',          interval_miles:5000,  interval_days:180,  reminder_type:'both'},
+  {title:'Tire Rotation',       interval_miles:7500,  interval_days:180,  reminder_type:'both'},
+  {title:'Air Filter (Engine)', interval_miles:15000, interval_days:365,  reminder_type:'both'},
+  {title:'Cabin Air Filter',    interval_miles:15000, interval_days:365,  reminder_type:'both'},
+  {title:'Spark Plugs',         interval_miles:30000, interval_days:null, reminder_type:'mileage'},
+  {title:'Coolant Check',       interval_miles:30000, interval_days:730,  reminder_type:'both'},
+  {title:'Brake Fluid',         interval_miles:null,  interval_days:730,  reminder_type:'time'},
+  {title:'Windshield Wipers',   interval_miles:null,  interval_days:365,  reminder_type:'time'},
+  {title:'Wiper Fluid',         interval_miles:null,  interval_days:90,   reminder_type:'time'},
+  {title:'Battery Check',       interval_miles:null,  interval_days:730,  reminder_type:'time'},
 ];
 
 // Commute style mileage estimates (miles per year)
@@ -1238,7 +1524,8 @@ async function renderDashboard(){
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
-  el.innerHTML=maybeShowTesterBanner()+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
+  var resolutionBanners = await maybeShowResolutionBanners();
+  el.innerHTML=maybeShowTesterBanner()+resolutionBanners+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
   <div class="stat-grid">
     <div class="stat-card"><div class="stat-label">Parts in Stock</div><div class="stat-value">${totalParts||0}</div><div style="font-size:12px;color:var(--text-muted)">Inventory records</div></div>
     <div class="stat-card"><div class="stat-label">Vehicles</div><div class="stat-value">${totalVehicles||0}</div><div style="font-size:12px;color:var(--text-muted)">Registered</div></div>
@@ -2482,6 +2769,13 @@ async function renderVehicleProfile(arg){
   html += '</div>';
 
   el.innerHTML = html;
+    // Load comments after profile renders
+    if(tab === 'overview' && id){
+      setTimeout(function(){
+        var cEl = document.getElementById('comments-vehicle-' + id);
+        if(cEl) renderComments('vehicle', id, 'comments-vehicle-' + id);
+      }, 100);
+    }
 }
 
 function setVehicleTab(tab){
@@ -2510,6 +2804,10 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
   if(vOwner){ html += '<div class="detail-field"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:6px"><span style="font-size:16px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>'; } else { html += '<div></div>'; }
   html += '</div>';
   html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
+  if(v.commute_style && COMMUTE_STYLES[v.commute_style]){
+    var cs = COMMUTE_STYLES[v.commute_style];
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Commute Style</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(cs.label)+' <span style="font-size:12px;color:var(--text-muted)">(~'+cs.miles_per_year.toLocaleString()+' mi/yr)</span></div></div>';
+  }
   if(interiorColor){
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
   }
@@ -2689,7 +2987,7 @@ async function saveVehicle(id){const year=parseInt(document.getElementById('v-ye
       var autoItems=AUTO_MAINTENANCE.map(function(m){
         var nd=null;
         if(m.interval_days){var d2=new Date(today2);d2.setDate(d2.getDate()+m.interval_days);nd=d2.toISOString().split('T')[0];}
-        return {vehicle_id:newV.id,title:m.title,interval_miles:m.interval_miles,interval_days:m.interval_days,next_due_date:nd,is_active:true,reminder_type:'auto'};
+        return {vehicle_id:newV.id,title:m.title,interval_miles:m.interval_miles,interval_days:m.interval_days,next_due_date:nd,is_active:true,reminder_type:m.reminder_type,is_auto:true};
       });
       await db.from('maintenance_reminders').insert(autoItems);
     }
@@ -2814,7 +3112,8 @@ function filterServiceHistory(query, services){
 }
 
 function renderServiceList(services){
-  if(!services||services.length===0) return html+'<div class="empty-state"><div class="empty-icon">&#x1F4CB;</div><p>No service records yet</p></div>';
+  var html='';
+  if(!services||services.length===0) return '<div class="empty-state"><div class="empty-icon">&#x1F4CB;</div><p>No service records yet</p></div>';
   services.forEach(function(s){
     html+='<div class="service-row"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div>';
     html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:700;text-transform:uppercase;color:var(--ku-blue)">'+esc(s.service_type||'Service')+'</div>';
