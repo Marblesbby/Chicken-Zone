@@ -425,13 +425,24 @@ db.auth.onAuthStateChange(async function(event, session){
   if(session && session.user){
     currentUser = session.user;
     if(_appInitialized){
-      // Subsequent auth events (token refresh etc) - just update user state silently
-      if(_currentUserProfile) return;
-      // If profile somehow missing, fetch it quietly
+      // Subsequent auth events (token refresh etc).
+      // Verify cached profile matches the auth user — guard against stale state from a different account.
+      if(_currentUserProfile && _currentUserProfile.id === currentUser.id) return;
+      // Profile missing or wrong user — fetch fresh
       try{
         var rp=await db.from('profiles').select('*').eq('id',currentUser.id).single();
         _currentUserProfile=rp.data||null;
         _isAdmin=_currentUserProfile&&_currentUserProfile.role==='admin';
+        // Update sidebar to match
+        var d2=document.getElementById('user-email-display');
+        if(d2 && _currentUserProfile){
+          var c2=_currentUserProfile.user_color||'#FFD700';
+          var n2=_currentUserProfile.display_name||_currentUserProfile.username||currentUser.email;
+          var e2=_currentUserProfile.avatar_emoji||'\u{1F407}';
+          d2.innerHTML=e2+' <span style="color:'+c2+';font-weight:600">'+esc(n2)+'</span>';
+        }
+        var an=document.getElementById('admin-nav');
+        if(an) an.style.display=_isAdmin?'block':'none';
       }catch(e){}
       return;
     }
@@ -631,9 +642,14 @@ async function renderUserProfile(){
   el.innerHTML = viewLoading('Loading profile...');
   try{
     var profRes = await withTimeout(db.from('profiles').select('*').eq('id', currentUser.id).single(), 6000);
-    _currentUserProfile = profRes.data || {};
-    _isAdmin = _currentUserProfile.role === 'admin';
-  }catch(e){}
+    if(profRes.data){
+      _currentUserProfile = profRes.data;
+      _isAdmin = _currentUserProfile.role === 'admin';
+      // Sync sidebar admin nav with fresh role
+      var an = document.getElementById('admin-nav');
+      if(an) an.style.display = _isAdmin ? 'block' : 'none';
+    }
+  }catch(e){ console.warn('Profile re-fetch failed:', e); }
   var p = _currentUserProfile || {};
   var uname = p.username || (currentUser.user_metadata && currentUser.user_metadata.username) || '';
   var ucolor = p.user_color || '#FFD700';
@@ -662,11 +678,6 @@ async function renderUserProfile(){
   html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:22px;font-weight:700;color:'+ucolor+'">'+esc(dname)+'</div>';
   html += '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px">';
   html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(role)+'</div>';
-  if(p.requested_role){
-    html += '<span style="font-size:11px;color:var(--warning)">Pending: '+esc(p.requested_role)+'</span>';
-  } else if(role !== 'admin'){
-    html += '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px" onclick="showRequestRoleModal()">Request Role</button>';
-  }
   html += '</div>';
   html += '</div>';
 
@@ -698,7 +709,14 @@ async function renderUserProfile(){
   html += '<input type="text" class="form-control" id="profile-invite-code" placeholder="Enter invite code" style="text-transform:uppercase;flex:1">';
   html += '<button class="btn btn-secondary" onclick="applyInviteCodeFromProfile()">Apply</button>';
   html += '</div>';
-  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">Current role: <strong style="color:var(--accent)">'+esc(role)+'</strong></div>';
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+  html += '<span>Current role: <strong style="color:var(--accent)">'+esc(role)+'</strong></span>';
+  if(p.requested_role){
+    html += '<span style="color:var(--warning);font-size:11px">⏳ Pending: '+esc(p.requested_role)+'</span>';
+  } else if(role !== 'admin'){
+    html += '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 10px" onclick="showRequestRoleModal()">Request Role</button>';
+  }
+  html += '</div>';
   html += '</div></div>';
 
   html += '</div>';
