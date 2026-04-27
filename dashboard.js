@@ -7,7 +7,7 @@ async function renderDashboard(){
   if(!el) return;
   // Show loading only on first visit
   if(!_session.inventory) el.innerHTML=viewLoading('Loading dashboard...');
-  let totalParts=0,totalVehicles=0,parts=[],reminders=[],stalePhotoVehicles=[];
+  let totalParts=0,totalVehicles=0,parts=[],reminders=[],stalePhotoVehicles=[],expiringDocs=[];
   try{
     // All data from session cache — no live Supabase calls on dashboard
     var [inv, veh, rems] = await Promise.all([
@@ -31,11 +31,47 @@ async function renderDashboard(){
         }
       });
     }
+    // Expiring docs — insurance & registration
+    if(veh.length > 0){
+      try{
+        var docRes = await db.from('vehicle_documents')
+          .select('*,vehicles(id,year,make,model,notes)')
+          .not('expiry_date','is',null);
+        var today2 = new Date();
+        (docRes.data||[]).forEach(function(d){
+          var expiry = new Date(d.expiry_date+'T12:00:00');
+          var remDays = (d.reminder_value||30) * (d.reminder_unit==='months'?30:1);
+          var warnDate = new Date(expiry.getTime() - remDays*86400000);
+          if(today2 >= warnDate){
+            expiringDocs.push(d);
+          }
+        });
+      }catch(e){}
+    }
   }catch(err){el.innerHTML=errBox(err.message);console.error('Dashboard error:',err);return;}
   const lowStock=parts.filter(p=>!p.is_historical&&p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
   var announcementsCard = await renderAnnouncementsCard();
+
+  // Expiring docs HTML
+  var expiringDocsHtml = '';
+  if(expiringDocs.length > 0){
+    expiringDocsHtml = '<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">📋 Documents Expiring Soon</div>';
+    expiringDocs.forEach(function(d){
+      var vName = d.vehicles ? getVehicleDisplayName(d.vehicles) : 'Vehicle';
+      var expiry = new Date(d.expiry_date+'T12:00:00');
+      var daysLeft = Math.ceil((expiry - today)/86400000);
+      var label = d.doc_type === 'insurance' ? '🛡️ Insurance' : '📋 Registration';
+      var color = daysLeft < 0 ? 'var(--danger)' : 'var(--warning)';
+      var daysText = daysLeft < 0 ? 'EXPIRED ' + Math.abs(daysLeft) + 'd ago' : 'Expires in ' + daysLeft + 'd';
+      expiringDocsHtml += '<div class="alert alert-warning" style="cursor:pointer" onclick="showView(\'vehicle-profile\',{id:\'' + (d.vehicles&&d.vehicles.id||d.vehicle_id) + '\',tab:\'docs\'})">';
+      expiringDocsHtml += '<strong>' + label + '</strong> · ' + esc(vName) + ' <span style="color:'+color+';font-weight:700;margin-left:8px">— '+daysText+'</span>';
+      expiringDocsHtml += '</div>';
+    });
+    expiringDocsHtml += '</div>';
+  }
+
   el.innerHTML=maybeShowTesterBanner()+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
   <div class="stat-grid">
     <div class="stat-card"><div class="stat-label">Parts in Stock</div><div class="stat-value">${totalParts||0}</div><div style="font-size:12px;color:var(--text-muted)">Inventory records</div></div>
@@ -44,6 +80,7 @@ async function renderDashboard(){
     <div class="stat-card"><div class="stat-label">Upcoming Service</div><div class="stat-value" style="color:${upcoming.length>0?'var(--warning)':'var(--success)'}">${upcoming.length}</div><div style="font-size:12px;color:var(--text-muted)">Due within 30 days</div></div>
   </div>
   ${announcementsCard}
+  ${expiringDocsHtml}
   <div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⏰ Upcoming Maintenance ${upcoming.length>0?`(${upcoming.length})`:''}</div>${upcoming.length>0 ? upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('') : '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No maintenance due soon. \u{1F44D}</div>'}</div>
   ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
   ${stalePhotoVehicles.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${stalePhotoVehicles.map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;

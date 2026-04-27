@@ -176,6 +176,21 @@ async function renderUsersPanel(){
     var users = usersRes.data || [];
     var vehicles = _session.vehicles || await getVehicles();
 
+    // Pre-fetch tester activity counts (parts + vehicles they created)
+    var testerIds = users.filter(function(u){ return u.role === 'tester'; }).map(function(u){ return u.id; });
+    var testerCounts = {};
+    if(testerIds.length > 0){
+      try{
+        var tpRes = await db.from('parts').select('created_by').in('created_by', testerIds).eq('is_historical', false);
+        var tvRes = await db.from('vehicles').select('created_by').in('created_by', testerIds);
+        testerIds.forEach(function(tid){
+          var pc = (tpRes.data||[]).filter(function(p){ return p.created_by === tid; }).length;
+          var vc = (tvRes.data||[]).filter(function(v){ return v.created_by === tid; }).length;
+          testerCounts[tid] = pc + vc;
+        });
+      }catch(e){}
+    }
+
     var html = '<div class="page-header"><div style="text-align:center;flex:1">';
     html += '<div class="page-title" style="font-size:42px">Users</div>';
     html += '<div class="page-subtitle" style="font-size:12px">Manage access and roles</div></div></div>';
@@ -190,6 +205,16 @@ async function renderUsersPanel(){
       html += '<div style="flex:1">';
       html += '<div style="font-weight:600;color:'+ucolor+'">'+(function(){ if(!u.display_name && !u.username){ unknownCount++; return 'Unknown '+unknownCount; } return esc(u.display_name||u.username||'Unknown'); })()+(isMe?' <span style="font-size:11px;color:var(--text-muted)">(you)</span>':'')+'</div>';
       html += '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">'+esc(u.role||'owner')+'</div>';
+      // Tester stats — days since last reset + item count, both in red
+      if(u.role === 'tester'){
+        var resetDate = new Date(u.last_reset_at || u.created_at);
+        var daysSince = Math.floor((new Date() - resetDate) / 86400000);
+        var itemCount = testerCounts[u.id] || 0;
+        html += '<div style="font-size:11px;margin-top:3px;display:flex;gap:10px">';
+        html += '<span style="color:var(--danger);font-weight:600">&#x1F551; ' + daysSince + ' day' + (daysSince !== 1 ? 's' : '') + ' since reset</span>';
+        html += '<span style="color:var(--danger);font-weight:600">&#x1F4E6; ' + itemCount + ' item' + (itemCount !== 1 ? 's' : '') + ' recorded</span>';
+        html += '</div>';
+      }
       if(u.reset_requested) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px">⚠️ Reset requested</div>';
       if(u.requested_role) html += '<div style="font-size:11px;color:var(--warning);margin-top:2px;cursor:help" title="Reason: '+esc(u.request_reason||'No reason given')+'">🚩 Requesting: '+esc(u.requested_role)+'</div>';
       html += '</div>';
@@ -356,6 +381,8 @@ async function adminResetTester(userId, username){
   try{
     var{error} = await db.rpc('reset_tester_data', {tester_id: userId});
     if(error) throw new Error(error.message);
+    // Stamp the reset time so days-since-reset counter resets
+    await db.from('profiles').update({ last_reset_at: new Date().toISOString() }).eq('id', userId);
     toast('Tester data reset!','success');
     invalidate();
     await renderUsersPanel();

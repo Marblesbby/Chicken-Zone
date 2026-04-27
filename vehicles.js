@@ -1,10 +1,14 @@
 // ─── CHICKEN ZONE — vehicles.js — Vehicles List, Vehicle Profile, Service, Maintenance ──────────
 // Depends on: app.js, parts.js (install flow)
 
+var PHOTO_ALBUMS = [
+    { id: 'exterior', label: 'Exterior', icon: '🚗', angles: ['Front', 'Left', 'Right', 'Back'] },
+    { id: 'interior', label: 'Interior', icon: '🪑', angles: ["Driver's Side", "Passenger's Side", 'Back Seat', 'Dashboard', 'Trunk'] }
+];
+
 // ─── VEHICLES ─────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── VEHICLES LIST PAGE ──────────────────────────────────────────────────────
-<<<<<<< HEAD
 async function renderVehicles() {
     var myToken = Date.now();
     const el = document.getElementById('view-vehicles');
@@ -22,25 +26,6 @@ async function renderVehicles() {
         console.error(err);
         return;
     }
-=======
-async function renderVehicles(){
-  var myToken = Date.now();
-  const el=document.getElementById('view-vehicles');
-  el.dataset.renderToken = myToken;
-  let vehicles=[];
-  let ownerProfiles=[];
-  try{
-    if(!_session.vehicles) el.innerHTML=viewLoading('Loading vehicles...');
-    [vehicles] = await Promise.all([getVehicles()]);
-    // Fetch owner assignments
-    var opRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id','is',null);
-    ownerProfiles = opRes.data || [];
-  }catch(err){
-    el.innerHTML=errBox(err.message, err.stack);
-    console.error(err);
-    return;
-  }
->>>>>>> 7f6d53fda0a37f033e12fbcdc0b5f5ac699d5e7f
 
     let html = '';
     html = maybeShowTesterBanner() + html;
@@ -202,6 +187,7 @@ async function renderVehicleProfile(arg) {
         { id: 'service', label: 'Service History (' + services.length + ')' },
         { id: 'parts', label: 'Installed Parts (' + installs.filter(function (i) { return !i.removed_date; }).length + ')' },
         { id: 'photos', label: 'Photos' },
+        { id: 'docs', label: '📋 Docs' },
         { id: 'reminders', label: 'Maintenance (' + reminders.length + ')' }
     ];
     tabs.forEach(function (t) {
@@ -214,6 +200,7 @@ async function renderVehicleProfile(arg) {
     else if (tab === 'service') html += renderServiceTab(services, id);
     else if (tab === 'parts') html += renderPartsTab(installs, id);
     else if (tab === 'photos') html += await renderPhotosTab(v);
+    else if (tab === 'docs') html += await renderDocsTab(v);
     else if (tab === 'reminders') html += renderRemindersTab(reminders, v, id);
     html += '</div>';
 
@@ -333,87 +320,276 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
     return html;
 }
 
-// Photos tab - skeleton for Phase 2
+// ─── PHOTOS TAB — Album-based system ─────────────────────────────────────────
 async function renderPhotosTab(v) {
     var vehicleId = v.id;
-    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px" class="no-print">';
-    html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;color:var(--text-muted)">Condition photos tagged by location. Orange ! means photo is over 1 year old.</div>';
-    html += '<label class="btn btn-primary btn-sm" style="cursor:pointer">+ Upload Photo<input type="file" accept="image/*" style="display:none" onchange="handleVehiclePhotoUpload(\'' + vehicleId + '\',this.files[0])"></label>';
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px" class="no-print">';
+    html += '<div style="font-size:13px;color:var(--text-muted)">Tap any slot to view or update. Orange <strong>!</strong> = over 1 year old.</div>';
+    html += '<button class="btn btn-primary btn-sm" onclick="showPhotoUploadModal(\'' + vehicleId + '\',null)">+ Add Photos</button>';
     html += '</div>';
+
     var photos = [];
     try {
         var res = await db.from('vehicle_photos').select('*').eq('vehicle_id', vehicleId).order('uploaded_at', { ascending: false });
         photos = res.data || [];
     } catch (e) { photos = []; }
-    if (photos.length === 0) {
-        html += '<div class="empty-state"><div class="empty-icon">&#x1F4F8;</div><p>No photos yet</p>';
-        html += '<div style="font-size:12px;color:var(--text-dim);margin-top:8px">Upload exterior, interior, and condition shots. Tap a photo to add tags.</div></div>';
-        return html;
-    }
-    var ORDER = { Exterior: 0, Interior: 1, 'Engine Bay': 2, Damage: 3 };
-    photos.sort(function (a, b) {
-        var ao = ORDER[a.location_tag] !== undefined ? ORDER[a.location_tag] : 99;
-        var bo = ORDER[b.location_tag] !== undefined ? ORDER[b.location_tag] : 99;
-        if (ao !== bo) return ao - bo;
-        var ad = a.damage_rating && a.damage_rating !== 'Excellent' ? 1 : 0;
-        var bd = b.damage_rating && b.damage_rating !== 'Excellent' ? 1 : 0;
-        if (ad !== bd) return ad - bd;
-        return new Date(b.uploaded_at) - new Date(a.uploaded_at);
-    });
-    var current = photos.filter(function (p) { return p.is_current; });
-    var historical = photos.filter(function (p) { return !p.is_current; });
+
     var oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    function photoCard(p) {
-        var needsUpdate = new Date(p.uploaded_at) < oneYearAgo;
-        var tagColor = p.location_tag === 'Damage' ? 'var(--danger)' : p.location_tag === 'Exterior' ? 'var(--ku-blue)' : 'var(--info)';
-        var card = '<div style="position:relative;cursor:pointer" onclick="openPhotoDetail(\'' + p.id + '\',\'' + vehicleId + '\')">' +
-            '<img src="' + p.image_url + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--border)">' +
-            '<div style="position:absolute;top:6px;left:6px;display:flex;gap:4px;flex-wrap:wrap">';
-        if (p.location_tag) card += '<span style="background:' + tagColor + ';color:#fff;font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 6px;border-radius:3px">' + esc(p.location_tag) + '</span>';
-        if (p.damage_rating && p.damage_rating !== 'Excellent') card += '<span style="background:var(--danger);color:#fff;font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 6px;border-radius:3px">' + esc(p.damage_rating) + '</span>';
-        card += '</div>';
-        if (needsUpdate) card += '<div style="position:absolute;top:6px;right:6px;background:var(--warning);color:#111;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700" title="Over 1 year old">!</div>';
-        card += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + fmtDate(p.uploaded_at) + '</div>';
-        if (p.notes) card += '<div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.notes) + '</div>';
-        card += '</div>';
-        return card;
+    var currentPhotos = photos.filter(function (p) { return p.is_current; });
+
+    function getPhotoForSlot(tag) {
+        return currentPhotos.find(function (p) { return p.location_tag === tag; }) || null;
     }
-    var sections = {};
-    current.forEach(function (p) { var k = p.location_tag || 'Untagged'; if (!sections[k]) sections[k] = []; sections[k].push(p); });
-    ['Exterior', 'Interior', 'Engine Bay', 'Damage', 'Untagged'].forEach(function (sec) {
-        if (!sections[sec] || sections[sec].length === 0) return;
-        html += '<div style="margin-bottom:24px">';
-        html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:12px">' + sec + '</div>';
-        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px">';
-        sections[sec].forEach(function (p) { html += photoCard(p); });
+
+    function renderSlot(tag, angleName) {
+        var photo = getPhotoForSlot(tag);
+        var needsUpdate = photo && new Date(photo.uploaded_at) < oneYearAgo;
+        var safeTag = tag.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        var slot = '<div style="cursor:pointer" onclick="' + (photo ? 'openPhotoDetail(\'' + photo.id + '\',\'' + vehicleId + '\')' : 'showPhotoUploadModal(\'' + vehicleId + '\',\'' + safeTag + '\')') + '">';
+        if (photo) {
+            slot += '<div style="position:relative">';
+            slot += '<img src="' + photo.image_url + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--border)">';
+            if (needsUpdate) slot += '<div style="position:absolute;top:6px;right:6px;background:var(--warning);color:#111;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700" title="Over 1 year old">!</div>';
+            if (photo.damage_rating) slot += '<div style="position:absolute;top:6px;left:6px;background:var(--danger);color:#fff;font-size:9px;font-family:Barlow Condensed,sans-serif;font-weight:700;text-transform:uppercase;padding:2px 5px;border-radius:3px">' + esc(photo.damage_rating) + '</div>';
+            slot += '</div>';
+        } else {
+            slot += '<div style="width:100%;aspect-ratio:4/3;border-radius:8px;border:2px dashed var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:rgba(255,255,255,.02)">';
+            slot += '<div style="font-size:22px;opacity:.25">📷</div>';
+            slot += '<div style="font-size:9px;color:var(--text-dim);font-family:Barlow Condensed,sans-serif;letter-spacing:1px;text-transform:uppercase">+ Add</div>';
+            slot += '</div>';
+        }
+        slot += '<div style="font-size:11px;color:' + (photo ? 'var(--text-muted)' : 'var(--text-dim)') + ';margin-top:4px;text-align:center">' + esc(angleName) + '</div>';
+        slot += '</div>';
+        return slot;
+    }
+
+    // Render named album sections — always shown even when empty
+    PHOTO_ALBUMS.forEach(function (album) {
+        html += '<div style="margin-bottom:28px">';
+        html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:12px;padding-bottom:4px;border-bottom:1px solid var(--border)">' + album.icon + ' ' + album.label + '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px">';
+        album.angles.forEach(function (angle) {
+            html += renderSlot(album.label + ' - ' + angle, angle);
+        });
         html += '</div></div>';
     });
+
+    // Damaged album — auto-populated from flagged photos across all albums
+    var damagedFromOtherAlbums = currentPhotos.filter(function (p) {
+        return p.damage_rating && p.location_tag !== 'Damaged';
+    });
+    var explicitDamaged = currentPhotos.filter(function (p) { return p.location_tag === 'Damaged'; });
+    var allDamaged = damagedFromOtherAlbums.concat(explicitDamaged);
+
+    html += '<div style="margin-bottom:28px">';
+    html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--danger);margin-bottom:12px;padding-bottom:4px;border-bottom:1px solid rgba(239,68,68,.4)">';
+    html += '⚠️ Damaged';
+    if (allDamaged.length === 0) html += ' <span style="color:var(--text-dim);font-size:11px;font-weight:400;letter-spacing:0;text-transform:none">— none flagged</span>';
+    html += '</div>';
+    if (allDamaged.length > 0) {
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px">';
+        allDamaged.forEach(function (p) {
+            html += '<div style="cursor:pointer" onclick="openPhotoDetail(\'' + p.id + '\',\'' + vehicleId + '\')">';
+            html += '<div style="position:relative"><img src="' + p.image_url + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:2px solid var(--danger)">';
+            html += '<div style="position:absolute;top:6px;left:6px;background:var(--danger);color:#fff;font-size:9px;font-family:Barlow Condensed,sans-serif;font-weight:700;text-transform:uppercase;padding:2px 5px;border-radius:3px">' + esc(p.damage_rating) + '</div>';
+            if (p.location_tag && p.location_tag !== 'Damaged') html += '<div style="position:absolute;bottom:4px;left:4px;background:rgba(0,0,0,.65);color:#fff;font-size:9px;font-family:Barlow Condensed,sans-serif;padding:2px 5px;border-radius:3px">' + esc(p.location_tag) + '</div>';
+            html += '</div>';
+            html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:center">' + (p.notes ? esc(p.notes.substring(0, 28)) : fmtDate(p.uploaded_at)) + '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    } else {
+        html += '<div style="font-size:13px;color:var(--text-dim);font-style:italic;padding:8px 0">No damage photos. Flag any photo as damaged when you tap it.</div>';
+    }
+    html += '</div>';
+
+    // Historical (replaced) photos
+    var historical = photos.filter(function (p) { return !p.is_current; });
     if (historical.length > 0) {
-        html += '<div style="margin-top:16px">';
-        html += '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'photo-hist\').style.display===\'none\'?document.getElementById(\'photo-hist\').style.display=\'grid\':document.getElementById(\'photo-hist\').style.display=\'none\'" style="margin-bottom:12px">&#x25BC; Show History (' + historical.length + ')</button>';
-        html += '<div id="photo-hist" style="display:none;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;opacity:.6">';
-        historical.forEach(function (p) { html += photoCard(p); });
+        html += '<div>';
+        html += '<button class="btn btn-ghost btn-sm" onclick="var el=document.getElementById(\'photo-hist\');el.style.display=el.style.display===\'none\'?\'grid\':\'none\'" style="margin-bottom:12px">▼ Show Photo History (' + historical.length + ')</button>';
+        html += '<div id="photo-hist" style="display:none;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;opacity:.6">';
+        historical.forEach(function (p) {
+            html += '<div style="cursor:pointer" onclick="openPhotoDetail(\'' + p.id + '\',\'' + vehicleId + '\')">';
+            html += '<img src="' + p.image_url + '" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid var(--border)">';
+            html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' + (p.location_tag ? esc(p.location_tag) + ' · ' : '') + fmtDate(p.uploaded_at) + '</div>';
+            html += '</div>';
+        });
         html += '</div></div>';
     }
     return html;
 }
 
-async function handleVehiclePhotoUpload(vehicleId, file) {
-    if (!file) return;
-    toast('Uploading...', 'info');
-    try {
-        var url = await uploadFile('vehicle-photos', file);
-        await db.from('vehicle_photos').insert({ vehicle_id: vehicleId, uploaded_by: currentUser.id, image_url: url, is_current: true, uploaded_at: new Date().toISOString() });
-        toast('Uploaded! Tap the photo to add tags.', 'success');
-        setVehicleTab('photos');
-    } catch (e) { toast('Upload failed: ' + e.message, 'error'); }
+// Build the location tag <option> list for dropdowns (used in modal + detail)
+function buildPhotoTagOptions(selectedTag) {
+    var opts = '<option value="">-- Untagged --</option>';
+    PHOTO_ALBUMS.forEach(function (album) {
+        opts += '<optgroup label="' + esc(album.label) + '">';
+        album.angles.forEach(function (angle) {
+            var tag = album.label + ' - ' + angle;
+            opts += '<option value="' + esc(tag) + '"' + (tag === selectedTag ? ' selected' : '') + '>' + esc(angle) + '</option>';
+        });
+        opts += '</optgroup>';
+    });
+    opts += '<option value="Damaged"' + ('Damaged' === selectedTag ? ' selected' : '') + '>Damaged</option>';
+    return opts;
 }
 
+// ─── PHOTO UPLOAD MODAL ───────────────────────────────────────────────────────
+var _puGuidedVehicleId = null;
+var _puGuidedTag = null;
+
+function showPhotoUploadModal(vehicleId, preselectedTag) {
+    // Guided take-photo grid
+    var takePhotoGrid = '';
+    PHOTO_ALBUMS.forEach(function (album) {
+        takePhotoGrid += '<div style="margin-bottom:16px">';
+        takePhotoGrid += '<div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:8px">' + album.icon + ' ' + album.label + '</div>';
+        takePhotoGrid += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+        album.angles.forEach(function (angle) {
+            var tag = album.label + ' - ' + angle;
+            var btnSafeId = 'tp-btn-' + tag.replace(/[^a-z0-9]/gi, '_');
+            var iconSafeId = 'tp-icon-' + tag.replace(/[^a-z0-9]/gi, '_');
+            var safeTag = tag.replace(/'/g, "\\'");
+            takePhotoGrid += '<button class="btn btn-secondary btn-sm" id="' + btnSafeId + '" style="display:flex;align-items:center;gap:6px;justify-content:flex-start" onclick="triggerGuidedPhoto(\'' + vehicleId + '\',\'' + safeTag + '\')">';
+            takePhotoGrid += '<span id="' + iconSafeId + '">📷</span> ' + esc(angle);
+            takePhotoGrid += '</button>';
+        });
+        takePhotoGrid += '</div></div>';
+    });
+
+    showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+        '<div class="modal" style="max-width:540px;max-height:88vh;display:flex;flex-direction:column">' +
+        '<div class="modal-header" style="flex-shrink:0">' +
+        '<div class="modal-title">Add Photos</div>' +
+        '<button class="close-btn" onclick="closeModal()">&times;</button>' +
+        '</div>' +
+
+        // Tab switcher
+        '<div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0">' +
+        '<button id="pu-tab-upload" onclick="switchPhotoTab(\'upload\')" style="flex:1;padding:10px;background:var(--accent);color:#111;border:none;font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer">📁 Upload</button>' +
+        '<button id="pu-tab-take" onclick="switchPhotoTab(\'take\')" style="flex:1;padding:10px;background:transparent;color:var(--text-muted);border:none;font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer">📷 Take Photo</button>' +
+        '</div>' +
+
+        // Upload section
+        '<div id="pu-section-upload" style="overflow-y:auto;flex:1">' +
+        '<div class="modal-body">' +
+        '<div class="form-group">' +
+        '<label>Select Photos <span style="color:var(--text-muted);font-weight:400">(select multiple at once)</span></label>' +
+        '<input type="file" class="form-control" id="pu-files" accept="image/*" multiple onchange="previewUploadPhotos(\'' + vehicleId + '\',\'' + (preselectedTag || '') + '\',this.files)">' +
+        '</div>' +
+        '<div id="pu-previews" style="display:flex;flex-direction:column;gap:10px"></div>' +
+        '</div></div>' +
+
+        // Take Photo section (hidden by default)
+        '<div id="pu-section-take" style="display:none;overflow-y:auto;flex:1">' +
+        '<div class="modal-body">' +
+        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;padding:8px;background:rgba(255,215,0,.06);border-radius:6px">Tap an angle — your camera opens and the photo uploads immediately. A ✅ appears when done.</div>' +
+        takePhotoGrid +
+        '</div></div>' +
+
+        // Hidden camera input
+        '<input type="file" id="pu-camera-input" accept="image/*" capture="environment" style="display:none" onchange="handleGuidedCapture(this)">' +
+
+        '<div class="modal-footer" style="flex-shrink:0">' +
+        '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' +
+        '<button class="btn btn-primary" id="pu-upload-btn" onclick="submitBulkUpload(\'' + vehicleId + '\')">Upload All</button>' +
+        '</div></div></div>');
+}
+
+function switchPhotoTab(tab) {
+    document.getElementById('pu-section-upload').style.display = tab === 'upload' ? 'flex' : 'none';
+    document.getElementById('pu-section-upload').style.flexDirection = 'column';
+    document.getElementById('pu-section-upload').style.flex = '1';
+    document.getElementById('pu-section-take').style.display = tab === 'take' ? 'flex' : 'none';
+    document.getElementById('pu-section-take').style.flexDirection = 'column';
+    document.getElementById('pu-section-take').style.flex = '1';
+    document.getElementById('pu-tab-upload').style.background = tab === 'upload' ? 'var(--accent)' : 'transparent';
+    document.getElementById('pu-tab-upload').style.color = tab === 'upload' ? '#111' : 'var(--text-muted)';
+    document.getElementById('pu-tab-take').style.background = tab === 'take' ? 'var(--accent)' : 'transparent';
+    document.getElementById('pu-tab-take').style.color = tab === 'take' ? '#111' : 'var(--text-muted)';
+    document.getElementById('pu-upload-btn').style.display = tab === 'upload' ? '' : 'none';
+}
+
+function triggerGuidedPhoto(vehicleId, tag) {
+    _puGuidedVehicleId = vehicleId;
+    _puGuidedTag = tag;
+    document.getElementById('pu-camera-input').click();
+}
+
+async function handleGuidedCapture(input) {
+    var file = input.files[0];
+    if (!file || !_puGuidedVehicleId || !_puGuidedTag) return;
+    var btnId = 'tp-btn-' + _puGuidedTag.replace(/[^a-z0-9]/gi, '_');
+    var iconId = 'tp-icon-' + _puGuidedTag.replace(/[^a-z0-9]/gi, '_');
+    var btn = document.getElementById(btnId);
+    var icon = document.getElementById(iconId);
+    if (btn) btn.disabled = true;
+    try {
+        var url = await uploadFile('vehicle-photos', file);
+        await db.from('vehicle_photos').update({ is_current: false }).eq('vehicle_id', _puGuidedVehicleId).eq('location_tag', _puGuidedTag).eq('is_current', true);
+        await db.from('vehicle_photos').insert({ vehicle_id: _puGuidedVehicleId, uploaded_by: currentUser.id, image_url: url, location_tag: _puGuidedTag, is_current: true, uploaded_at: new Date().toISOString() });
+        if (icon) icon.textContent = '✅';
+        if (btn) { btn.style.borderColor = 'var(--success)'; btn.style.color = 'var(--success)'; btn.disabled = false; }
+        toast('Photo saved!', 'success');
+    } catch (e) { toast('Upload failed: ' + e.message, 'error'); if (btn) btn.disabled = false; }
+    input.value = '';
+    _puGuidedTag = null;
+}
+
+function previewUploadPhotos(vehicleId, preselectedTag, files) {
+    var container = document.getElementById('pu-previews');
+    if (!container) return;
+    container.innerHTML = '';
+    Array.from(files).forEach(function (file, idx) {
+        var objUrl = URL.createObjectURL(file);
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:12px;align-items:flex-start;padding:10px;background:var(--surface);border-radius:6px;border:1px solid var(--border)';
+        row.innerHTML = '<img src="' + objUrl + '" style="width:80px;height:60px;object-fit:cover;border-radius:4px;flex-shrink:0">' +
+            '<div style="flex:1;display:flex;flex-direction:column;gap:6px">' +
+            '<select class="form-control" id="pu-tag-' + idx + '" style="font-size:12px">' + buildPhotoTagOptions(preselectedTag || '') + '</select>' +
+            '<select class="form-control" id="pu-dmg-' + idx + '" style="font-size:12px">' +
+            '<option value="">No damage</option>' +
+            '<option value="Minor">Minor damage</option>' +
+            '<option value="Moderate">Moderate damage</option>' +
+            '<option value="Severe">Severe damage</option>' +
+            '</select>' +
+            '<input type="text" class="form-control" id="pu-note-' + idx + '" placeholder="Note (optional)" style="font-size:12px">' +
+            '</div>';
+        container.appendChild(row);
+    });
+}
+
+async function submitBulkUpload(vehicleId) {
+    var fileInput = document.getElementById('pu-files');
+    var files = fileInput ? Array.from(fileInput.files) : [];
+    if (files.length === 0) { toast('No files selected', 'error'); return; }
+    var btn = document.getElementById('pu-upload-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+    var ok = 0;
+    for (var i = 0; i < files.length; i++) {
+        var tag = document.getElementById('pu-tag-' + i) ? document.getElementById('pu-tag-' + i).value : '';
+        var dmg = document.getElementById('pu-dmg-' + i) ? document.getElementById('pu-dmg-' + i).value : '';
+        var note = document.getElementById('pu-note-' + i) ? document.getElementById('pu-note-' + i).value.trim() : '';
+        try {
+            var url = await uploadFile('vehicle-photos', files[i]);
+            if (tag) { await db.from('vehicle_photos').update({ is_current: false }).eq('vehicle_id', vehicleId).eq('location_tag', tag).eq('is_current', true); }
+            await db.from('vehicle_photos').insert({ vehicle_id: vehicleId, uploaded_by: currentUser.id, image_url: url, location_tag: tag || null, damage_rating: dmg || null, notes: note || null, is_current: true, uploaded_at: new Date().toISOString() });
+            ok++;
+        } catch (e) { toast('Failed: ' + (files[i].name || 'photo'), 'error'); }
+    }
+    if (ok > 0) toast(ok + ' photo' + (ok > 1 ? 's' : '') + ' uploaded! \uD83C\uDF89', 'success');
+    closeModal();
+    _currentVehicleProfile.tab = 'photos';
+    await renderVehicleProfile({ id: vehicleId });
+}
+
+// ─── PHOTO DETAIL (tap existing photo) ───────────────────────────────────────
 async function openPhotoDetail(photoId, vehicleId) {
     var res = await db.from('vehicle_photos').select('*').eq('id', photoId).single();
     var p = res.data; if (!p) return;
-    var locOpts = ['Exterior', 'Interior', 'Engine Bay', 'Damage'].map(function (t) { return '<option value="' + t + '"' + (p.location_tag === t ? ' selected' : '') + '>' + t + '</option>'; }).join('');
-    var dmgOpts = ['Excellent', 'Good', 'Fair', 'Poor', 'Parts Only'].map(function (d) { return '<option value="' + d + '"' + (p.damage_rating === d ? ' selected' : '') + '>' + d + '</option>'; }).join('');
+    var locOpts = buildPhotoTagOptions(p.location_tag || '');
+    var dmgOpts = ['Minor', 'Moderate', 'Severe'].map(function (d) { return '<option value="' + d + '"' + (p.damage_rating === d ? ' selected' : '') + '>' + d + '</option>'; }).join('');
     var hr = p.location_tag ? await db.from('vehicle_photos').select('*').eq('vehicle_id', vehicleId).eq('location_tag', p.location_tag).order('uploaded_at', { ascending: false }) : null;
     var history = (hr && hr.data || []).filter(function (h) { return h.id !== photoId; });
     showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">' +
@@ -421,18 +597,16 @@ async function openPhotoDetail(photoId, vehicleId) {
         '<div class="modal-body">' +
         '<img src="' + p.image_url + '" style="width:100%;border-radius:8px;margin-bottom:16px;max-height:280px;object-fit:cover">' +
         '<div class="grid-2">' +
-        '<div class="form-group"><label>Location Tag</label><select class="form-control" id="pd-loc"><option value="">Untagged</option>' + locOpts + '</select></div>' +
-        '<div class="form-group"><label>Damage Rating</label><select class="form-control" id="pd-dmg"><option value="">No damage noted</option>' + dmgOpts + '</select></div>' +
+        '<div class="form-group"><label>Album / Angle</label><select class="form-control" id="pd-loc"><option value="">Untagged</option>' + locOpts + '</select></div>' +
+        '<div class="form-group"><label>Damage</label><select class="form-control" id="pd-dmg"><option value="">None</option>' + dmgOpts + '</select></div>' +
         '</div>' +
         '<div class="form-group"><label>Notes</label><input type="text" class="form-control" id="pd-notes" value="' + esc(p.notes || '') + '" placeholder="e.g. Rust on rocker panel"></div>' +
-        (history.length > 0 ? '<div style="margin-top:12px"><div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px">Previous ' + esc(p.location_tag || '') + ' photos</div>' +
-            '<div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">' +
-            history.slice(0, 6).map(function (h) { return '<div style="flex-shrink:0"><img src="' + h.image_url + '" style="width:80px;height:60px;object-fit:cover;border-radius:4px;opacity:.7"><div style="font-size:10px;color:var(--text-muted);text-align:center">' + fmtDate(h.uploaded_at) + '</div></div>'; }).join('') +
-            '</div></div>' : '') + '</div>' +
+        (history.length > 0 ? '<div style="margin-top:12px"><div style="font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px">Previous photos for this angle</div><div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">' + history.slice(0, 6).map(function (h) { return '<div style="flex-shrink:0"><img src="' + h.image_url + '" style="width:80px;height:60px;object-fit:cover;border-radius:4px;opacity:.7"><div style="font-size:10px;color:var(--text-muted);text-align:center">' + fmtDate(h.uploaded_at) + '</div></div>'; }).join('') + '</div></div>' : '') +
+        '</div>' +
         '<div class="modal-footer">' +
-        '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteVehiclePhoto(\'' + photoId + '\',\'' + vehicleId + '\')">Delete</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteVehiclePhoto(\'' + photoId + '\',\'' + vehicleId + '\')">Delete</button>' +
         '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn btn-primary" onclick="savePhotoTags(\'' + photoId + '\',\'' + vehicleId + '\')">Save Tags</button>' +
+        '<button class="btn btn-primary" onclick="savePhotoTags(\'' + photoId + '\',\'' + vehicleId + '\')">Save</button>' +
         '</div></div></div>');
 }
 
@@ -441,13 +615,128 @@ async function savePhotoTags(photoId, vehicleId) {
     if (locTag) { await db.from('vehicle_photos').update({ is_current: false }).eq('vehicle_id', vehicleId).eq('location_tag', locTag).eq('is_current', true).neq('id', photoId); }
     var { error } = await db.from('vehicle_photos').update({ location_tag: locTag || null, damage_rating: dmgRating || null, notes: notes || null, is_current: true }).eq('id', photoId);
     if (error) { toast(error.message, 'error'); return; }
-    toast('Tags saved!', 'success'); closeModal(); setVehicleTab('photos');
+    toast('Saved!', 'success'); closeModal();
+    _currentVehicleProfile.tab = 'photos';
+    await renderVehicleProfile({ id: vehicleId });
 }
 
 async function deleteVehiclePhoto(photoId, vehicleId) {
-    if (!confirm('Delete this photo?')) return;
+    if (!confirm('Delete this photo permanently?')) return;
     await db.from('vehicle_photos').delete().eq('id', photoId);
-    toast('Deleted', 'success'); closeModal(); setVehicleTab('photos');
+    toast('Deleted', 'success'); closeModal();
+    _currentVehicleProfile.tab = 'photos';
+    await renderVehicleProfile({ id: vehicleId });
+}
+
+// ─── DOCS TAB — Insurance & Registration ─────────────────────────────────────
+async function renderDocsTab(v) {
+    var vehicleId = v.id;
+    var docs = [];
+    try {
+        var res = await db.from('vehicle_documents').select('*').eq('vehicle_id', vehicleId);
+        docs = res.data || [];
+    } catch (e) { docs = []; }
+
+    var insurance = docs.find(function (d) { return d.doc_type === 'insurance'; }) || null;
+    var registration = docs.find(function (d) { return d.doc_type === 'registration'; }) || null;
+
+    var html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px">';
+    html += renderDocCard(vehicleId, 'insurance', '🛡️ Insurance', insurance);
+    html += renderDocCard(vehicleId, 'registration', '📋 Registration', registration);
+    html += '</div>';
+    return html;
+}
+
+function renderDocCard(vehicleId, docType, label, doc) {
+    var today = new Date();
+    var expiryLine = '';
+    if (doc && doc.expiry_date) {
+        var expiry = new Date(doc.expiry_date + 'T12:00:00');
+        var daysLeft = Math.ceil((expiry - today) / 86400000);
+        if (daysLeft < 0) {
+            expiryLine = '<div style="color:var(--danger);font-size:12px;font-weight:600;margin-top:6px">⚠️ EXPIRED ' + Math.abs(daysLeft) + ' days ago</div>';
+        } else if (daysLeft <= 60) {
+            expiryLine = '<div style="color:var(--warning);font-size:12px;font-weight:600;margin-top:6px">⚠️ Expires in ' + daysLeft + ' day' + (daysLeft !== 1 ? 's' : '') + '</div>';
+        }
+    }
+
+    var html = '<div class="ms-box">';
+    html += '<div class="ms-box-title">' + label + '</div>';
+    html += '<div class="ms-box-body">';
+
+    if (doc && doc.image_url) {
+        html += '<img src="' + doc.image_url + '" style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:6px;margin-bottom:12px;border:1px solid var(--border);cursor:pointer" onclick="window.open(\'' + doc.image_url + '\',\'_blank\')" title="Click to view full size">';
+    } else if (docType === 'insurance') {
+        html += '<div style="width:100%;aspect-ratio:16/9;border-radius:6px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;margin-bottom:12px;background:rgba(255,255,255,.02)"><span style="font-size:11px;color:var(--text-dim);font-family:Barlow Condensed,sans-serif;letter-spacing:1px;text-transform:uppercase">No card photo</span></div>';
+    }
+
+    if (doc && doc.expiry_date) {
+        html += '<div class="ms-field"><span class="ms-field-label">Expires</span><span class="ms-field-val">' + fmtDate(doc.expiry_date) + '</span></div>';
+        html += expiryLine;
+    } else {
+        html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:8px">No expiry date on file.</div>';
+    }
+
+    if (doc && doc.reminder_value) {
+        html += '<div class="ms-field" style="margin-top:6px"><span class="ms-field-label">Reminder</span><span class="ms-field-val" style="font-size:12px">' + doc.reminder_value + ' ' + (doc.reminder_unit || 'days') + ' before expiry</span></div>';
+    }
+
+    html += '<div style="margin-top:14px">';
+    html += '<button class="btn btn-primary btn-sm" onclick="showDocModal(\'' + vehicleId + '\',\'' + docType + '\',' + (doc ? '\'' + doc.id + '\'' : 'null') + ')">' + (doc ? '✏️ Update' : '+ Add') + '</button>';
+    html += '</div>';
+    html += '</div></div>';
+    return html;
+}
+
+async function showDocModal(vehicleId, docType, docId) {
+    var doc = null;
+    if (docId && docId !== 'null') {
+        try { var r = await db.from('vehicle_documents').select('*').eq('id', docId).single(); doc = r.data; } catch (e) {}
+    }
+    var label = docType === 'insurance' ? 'Insurance Card' : 'Registration';
+    var photoField = docType === 'insurance'
+        ? '<div class="form-group"><label>Card Photo</label><input type="file" class="form-control" id="doc-photo" accept="image/*">' + (doc && doc.image_url ? '<div style="margin-top:6px"><img src="' + doc.image_url + '" style="max-height:70px;border-radius:4px"> <a href="' + doc.image_url + '" target="_blank" style="font-size:11px;color:var(--accent)">View current ↗</a></div>' : '') + '</div>'
+        : '';
+
+    showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+        '<div class="modal" style="max-width:420px">' +
+        '<div class="modal-header"><div class="modal-title">' + (doc ? 'Update' : 'Add') + ' ' + label + '</div>' +
+        '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+        '<div class="modal-body">' +
+        photoField +
+        '<div class="form-group"><label>Expiry Date</label><input type="date" class="form-control" id="doc-expiry" value="' + (doc && doc.expiry_date ? doc.expiry_date : '') + '"></div>' +
+        '<div class="form-group"><label>Remind Me Before Expiry</label>' +
+        '<div style="display:flex;gap:8px">' +
+        '<input type="number" class="form-control" id="doc-remind-val" value="' + (doc ? (doc.reminder_value || 30) : 30) + '" min="1" style="width:90px">' +
+        '<select class="form-control" id="doc-remind-unit" style="width:auto">' +
+        '<option value="days"' + (doc && doc.reminder_unit === 'days' ? ' selected' : !doc ? ' selected' : '') + '>Days</option>' +
+        '<option value="months"' + (doc && doc.reminder_unit === 'months' ? ' selected' : '') + '>Months</option>' +
+        '</select>' +
+        '</div></div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveVehicleDoc(\'' + vehicleId + '\',\'' + docType + '\',' + (docId ? '\'' + docId + '\'' : 'null') + ')">Save</button>' +
+        '</div></div></div>');
+}
+
+async function saveVehicleDoc(vehicleId, docType, docId) {
+    var expiry = val('doc-expiry') || null;
+    var remindVal = parseInt(document.getElementById('doc-remind-val').value) || 30;
+    var remindUnit = val('doc-remind-unit') || 'days';
+    var data = { vehicle_id: vehicleId, doc_type: docType, expiry_date: expiry, reminder_value: remindVal, reminder_unit: remindUnit, updated_at: new Date().toISOString() };
+    var photoFile = document.getElementById('doc-photo') ? document.getElementById('doc-photo').files[0] : null;
+    if (photoFile) { try { data.image_url = await uploadFile('vehicle-docs', photoFile); } catch (e) { toast('Photo upload failed', 'error'); return; } }
+    var error;
+    if (docId && docId !== 'null') {
+        ({ error } = await db.from('vehicle_documents').update(data).eq('id', docId));
+    } else {
+        ({ error } = await db.from('vehicle_documents').insert(data));
+    }
+    if (error) { toast(error.message, 'error'); return; }
+    toast('Saved!', 'success'); closeModal();
+    _currentVehicleProfile.tab = 'docs';
+    await renderVehicleProfile({ id: vehicleId });
 }
 
 
@@ -520,28 +809,15 @@ function saveInstallFromModal() {
 // or parts they had on hand when installing. Creates install record only — no inventory entry.
 
 async function showHistoricalInstallModal(vehicleId) {
+    // Fetch the vehicle to get preferred_historical_date if set
     var vRes = await db.from('vehicles').select('preferred_historical_date').eq('id', vehicleId).single();
     var defaultDate = (vRes.data && vRes.data.preferred_historical_date) || '';
 
+    // Build category list from catalog
     var cats = getCategories();
     var catOpts = '<option value="">Select a category...</option>';
-    cats.forEach(function (c) { catOpts += '<option value="' + esc(c) + '">' + esc(c) + '</option>'; });
-
-    // Build multi-part checklist grouped by category
-    var multiList = '';
-    cats.forEach(function (cat) {
-        var partsInCat = _catalog.filter(function (p) { return p.cat === cat; });
-        if (!partsInCat.length) return;
-        multiList += '<div style="margin-bottom:10px">';
-        multiList += '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);font-weight:700;margin-bottom:4px">' + esc(cat) + '</div>';
-        partsInCat.forEach(function (p) {
-            multiList += '<label style="display:flex;align-items:center;gap:8px;padding:4px;cursor:pointer;font-size:13px;border-radius:4px" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'\'">';
-            multiList += '<input type="checkbox" id="hi-check-' + p.id + '" value="' + p.id + '" style="cursor:pointer;flex-shrink:0">';
-            multiList += '<span style="flex:1">' + esc(p.name) + '</span>';
-            if (p.oem) multiList += '<span style="font-size:10px;color:var(--text-dim);font-family:\'Barlow Condensed\',sans-serif">' + esc(p.oem) + '</span>';
-            multiList += '</label>';
-        });
-        multiList += '</div>';
+    cats.forEach(function (c) {
+        catOpts += '<option value="' + esc(c) + '">' + esc(c) + '</option>';
     });
 
     var modal = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
@@ -549,30 +825,19 @@ async function showHistoricalInstallModal(vehicleId) {
         '<div class="modal-header"><div class="modal-title">+ Historical Install</div>' +
         '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
         '<div class="modal-body">' +
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">For parts installed before you started using Chicken Zone, or parts you already had on hand. This won\'t add to inventory — just records the install.</div>' +
+        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">For parts that were installed before you started using Chicken Zone, or parts you already had on hand. This won\'t add to inventory — just records the install.</div>' +
 
-        // ── Single-part section (shown by default)
-        '<div id="hi-single-section">' +
         '<div class="form-group"><label>Part Type</label>' +
         '<select class="form-control" id="hi-cat" onchange="updateHistoricalPartList()">' + catOpts + '</select></div>' +
+
         '<div class="form-group"><label>Part Name</label>' +
         '<select class="form-control" id="hi-part" onchange="updateHistoricalOEM()" disabled>' +
         '<option value="">Select a category first...</option></select></div>' +
+
         '<div class="form-group"><label>OEM Part Number</label>' +
         '<input type="text" class="form-control" id="hi-oem" placeholder="(auto-filled when part selected)" readonly></div>' +
-        '</div>' +
 
-        // ── Multi-part section (hidden until toggle)
-        '<div id="hi-multi-section" style="display:none">' +
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:10px;background:rgba(255,215,0,.06);border-left:3px solid var(--accent);border-radius:0 6px 6px 0;line-height:1.5">' +
-        '&#x2705; All selected parts will be installed using their OEM part numbers. To edit part numbers or other details afterward, use the <strong>Installed Parts</strong> tab on this vehicle\'s profile.' +
-        '</div>' +
-        '<div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:10px">' +
-        multiList +
-        '</div></div>' +
-
-        // ── Shared fields
-        '<div class="grid-2" style="margin-top:12px">' +
+        '<div class="grid-2">' +
         '<div class="form-group"><label>Condition</label>' +
         '<select class="form-control" id="hi-cond">' +
         '<option value="New" selected>New</option>' +
@@ -597,12 +862,6 @@ async function showHistoricalInstallModal(vehicleId) {
         '<div class="form-group"><label>Notes</label>' +
         '<textarea class="form-control" id="hi-notes" rows="2" placeholder="optional"></textarea></div>' +
 
-        // ── Multiple toggle at bottom left
-        '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;color:var(--accent);width:fit-content">' +
-        '<input type="checkbox" id="hi-multi" onchange="toggleHistoricalMultiple()"> &#xFF0B; Multiple Parts' +
-        '</label></div>' +
-
         '</div>' +
         '<div class="modal-footer">' +
         '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
@@ -610,12 +869,6 @@ async function showHistoricalInstallModal(vehicleId) {
         '</div></div></div>';
 
     showModal(modal);
-}
-
-function toggleHistoricalMultiple() {
-    var isMulti = document.getElementById('hi-multi').checked;
-    document.getElementById('hi-single-section').style.display = isMulti ? 'none' : 'block';
-    document.getElementById('hi-multi-section').style.display = isMulti ? 'block' : 'none';
 }
 
 function updateHistoricalPartList() {
@@ -649,61 +902,41 @@ function updateHistoricalOEM() {
 }
 
 async function saveHistoricalInstall(vehicleId) {
-    var cond = val('hi-cond') || 'New';
-    var miles = parseInt(document.getElementById('hi-miles').value) || null;
-    var noDate = document.getElementById('hi-no-date') && document.getElementById('hi-no-date').checked;
-    var dateInstalled = noDate ? null : (val('hi-date') || null);
-    var notes = val('hi-notes') || null;
-    var isMulti = document.getElementById('hi-multi') && document.getElementById('hi-multi').checked;
-
-    if (isMulti) {
-        var checked = Array.from(document.querySelectorAll('#hi-multi-section input[type="checkbox"]:checked'));
-        if (checked.length === 0) return toast('Select at least one part', 'error');
-        var failCount = 0;
-        for (var ci = 0; ci < checked.length; ci++) {
-            var cpId = checked[ci].value;
-            var cp = _catalog.find(function (p) { return p.id === cpId; });
-            if (!cp) continue;
-            var pr = await db.from('parts').insert({
-                name: cp.name, catalog_part_id: cp.id,
-                part_number: cp.oem || null, condition: cond,
-                quantity: 0, source: 'Historical', is_historical: true
-            }).select().single();
-            if (pr.error) { failCount++; continue; }
-            await db.from('part_installations').insert({
-                part_id: pr.data.id, vehicle_id: vehicleId,
-                installed_date: dateInstalled, installed_mileage: miles,
-                notes: notes, is_historical: true
-            });
-        }
-        if (failCount > 0) toast(failCount + ' part(s) failed to save', 'error');
-        else toast(checked.length + ' historical install' + (checked.length > 1 ? 's' : '') + ' logged \uD83C\uDF89', 'success');
-        invalidate();
-        closeModal();
-        setTimeout(async function () { if (_currentVehicleProfile.id) await refreshVehicleView(); }, 200);
-        return;
-    }
-
-    // ── Single part mode
     var catalogId = val('hi-part');
     if (!catalogId) return toast('Select a part', 'error');
     var partSel = document.getElementById('hi-part');
     var partOpt = partSel.options[partSel.selectedIndex];
     var partName = partOpt.dataset.name || '';
     var oem = val('hi-oem');
+    var cond = val('hi-cond') || 'New';
+    var miles = parseInt(document.getElementById('hi-miles').value) || null;
+    var noDate = document.getElementById('hi-no-date').checked;
+    var dateInstalled = noDate ? null : (val('hi-date') || null);
+    var notes = val('hi-notes') || null;
 
-    var { data: newPart, error: partErr } = await db.from('parts').insert({
-        name: partName, catalog_part_id: catalogId,
-        part_number: oem || null, condition: cond,
-        quantity: 0, source: 'Historical', is_historical: true
-    }).select().single();
+    // Create a parts row with quantity 0 + is_historical=true so it doesn't pollute inventory
+    var partRow = {
+        name: partName,
+        catalog_part_id: catalogId,
+        part_number: oem || null,
+        condition: cond,
+        quantity: 0,
+        source: 'Historical',
+        is_historical: true
+    };
+    var { data: newPart, error: partErr } = await db.from('parts').insert(partRow).select().single();
     if (partErr) { toast(partErr.message, 'error'); return; }
 
-    var { error: instErr } = await db.from('part_installations').insert({
-        part_id: newPart.id, vehicle_id: vehicleId,
-        installed_date: dateInstalled, installed_mileage: miles,
-        notes: notes, is_historical: true
-    });
+    // Create install record linked to the historical part
+    var installRow = {
+        part_id: newPart.id,
+        vehicle_id: vehicleId,
+        installed_date: dateInstalled,
+        installed_mileage: miles,
+        notes: notes,
+        is_historical: true
+    };
+    var { error: instErr } = await db.from('part_installations').insert(installRow);
     if (instErr) { toast(instErr.message, 'error'); return; }
 
     toast('Historical install logged', 'success');
@@ -754,83 +987,6 @@ async function saveInstall(vehicleId) {
 async function showRemovePartModal(installId) { showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Mark Part Removed</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Date Removed</label><input type="date" class="form-control" id="rp-date" value="${new Date().toISOString().split('T')[0]}"></div><div class="form-group"><label>Reason</label><input type="text" class="form-control" id="rp-reason" placeholder="e.g. Failed early, Upgraded, Swapped"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="markRemoved('${installId}')">Confirm</button></div></div></div>`) }
 
 async function markRemoved(installId) { const { error } = await db.from('part_installations').update({ removed_date: val('rp-date') || new Date().toISOString().split('T')[0], removal_reason: val('rp-reason') || null }).eq('id', installId); if (error) { toast(error.message, 'error'); return } toast('Marked removed', 'success'); invalidate(); closeModal(); await refreshVehicleView() }
-
-async function deleteInstallRecord(installId) {
-    if (!confirm('Permanently delete this installation record? This cannot be undone.')) return;
-    var { error } = await db.from('part_installations').delete().eq('id', installId);
-    if (error) { toast(error.message, 'error'); return; }
-    toast('Record deleted', 'success');
-    invalidate();
-    await refreshVehicleView();
-}
-
-async function showSwapPartModal(installId, catalogPartId, partName) {
-    var invItems = (_session.inventory || []).filter(function (p) {
-        return p.catalog_part_id === catalogPartId && p.quantity > 0;
-    });
-    var invOpts = '<option value="">No inventory — just log the swap</option>';
-    invItems.forEach(function (p) {
-        invOpts += '<option value="' + p.id + '">' + esc(p.name) +
-            (p.condition ? ' (' + esc(p.condition) + ')' : '') +
-            (p.part_number ? ' #' + esc(p.part_number) : '') + '</option>';
-    });
-    var invField = invItems.length > 0
-        ? '<div class="form-group"><label>Use from Inventory</label><select class="form-control" id="sw-inv">' + invOpts + '</select></div>'
-        : '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;padding:8px;background:var(--surface);border-radius:6px">No matching inventory on hand — the swap will be logged but no inventory item will be consumed.</div><input type="hidden" id="sw-inv" value="">';
-    showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
-        '<div class="modal" style="max-width:440px">' +
-        '<div class="modal-header"><div class="modal-title">&#x1F504; Swap Part</div>' +
-        '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
-        '<div class="modal-body">' +
-        '<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:16px">' +
-        '<strong style="font-size:13px">' + esc(partName) + '</strong><br>' +
-        '<span style="font-size:12px;color:var(--text-muted)">Current install will be marked removed. A new install will be logged in its place.</span>' +
-        '</div>' +
-        invField +
-        '<div class="grid-2">' +
-        '<div class="form-group"><label>Date Swapped</label><input type="date" class="form-control" id="sw-date" value="' + new Date().toISOString().split('T')[0] + '"></div>' +
-        '<div class="form-group"><label>Mileage at Swap</label><input type="number" class="form-control" id="sw-miles" placeholder="optional"></div>' +
-        '</div>' +
-        '<div class="form-group"><label>Reason / Notes</label><input type="text" class="form-control" id="sw-reason" placeholder="e.g. Failed early, Upgraded, Preventive"></div>' +
-        '</div>' +
-        '<div class="modal-footer">' +
-        '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn btn-primary" onclick="saveSwapPart(\'' + installId + '\',\'' + esc(partName).replace(/\'/g, '&#39;') + '\')">Confirm Swap</button>' +
-        '</div></div></div>');
-}
-
-async function saveSwapPart(installId, partName) {
-    var swDate = val('sw-date') || new Date().toISOString().split('T')[0];
-    var swMiles = parseInt(document.getElementById('sw-miles').value) || null;
-    var swReason = val('sw-reason') || null;
-    var invId = val('sw-inv') || null;
-
-    var { error: remErr } = await db.from('part_installations').update({
-        removed_date: swDate,
-        removal_reason: swReason || 'Swapped'
-    }).eq('id', installId);
-    if (remErr) { toast(remErr.message, 'error'); return; }
-
-    if (invId) {
-        var { error: instErr } = await db.from('part_installations').insert({
-            part_id: invId,
-            vehicle_id: _currentVehicleProfile.id,
-            installed_date: swDate,
-            installed_mileage: swMiles,
-            notes: swReason || null
-        });
-        if (instErr) { toast(instErr.message, 'error'); return; }
-        var qRes = await db.from('parts').select('quantity').eq('id', invId).single();
-        if (qRes.data && qRes.data.quantity > 0) {
-            await db.from('parts').update({ quantity: qRes.data.quantity - 1 }).eq('id', invId);
-        }
-    }
-
-    invalidate();
-    closeModal();
-    toast('Part swapped! &#x2705;', 'success');
-    setTimeout(async function () { if (_currentVehicleProfile.id) await refreshVehicleView(); }, 300);
-}
 
 async function showReminderModal(vehicleId, kind) {
     kind = kind || 'follow_up';
@@ -1072,17 +1228,8 @@ function renderPartsTabContent(active, removed) {
             groups[cat].forEach(function (i) {
                 var gid = 'grp_' + safeId(i.parts ? i.parts.name : 'unk') + '_' + i.id.substring(0, 8);
                 html += '<div class="install-row" style="cursor:pointer;margin-bottom:4px" onclick="toggleInstallHistory(\'' + gid + '\')">';
-                var cpId = (i.parts && i.parts.catalog_part_id) ? i.parts.catalog_part_id : null;
-                html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">';
-                html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
-                if (cpId) {
-                    html += '<strong style="font-size:13px;cursor:pointer;color:var(--accent);text-decoration:underline dotted;text-underline-offset:3px" onclick="event.stopPropagation();showPartProfilePopup(\'' + cpId + '\')">' + esc(i.parts.name) + '</strong>';
-                } else {
-                    html += '<strong style="font-size:13px">' + esc(i.parts ? i.parts.name : 'Unknown') + '</strong>';
-                }
-                html += '<span class="badge badge-ok" style="font-size:10px">Active</span>';
-                html += '<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 7px;line-height:1.4" title="Swap this part — marks this one removed and logs a fresh install in its place" onclick="event.stopPropagation();showSwapPartModal(\'' + i.id + '\',\'' + (cpId || '') + '\',\'' + esc(i.parts ? (i.parts.name || '') : '').replace(/\'/g, '&#39;') + '\')">&#x1F504; Swap</button>';
-                html += '</div>';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+                html += '<div style="display:flex;align-items:center;gap:8px"><strong style="font-size:13px">' + esc(i.parts ? i.parts.name : 'Unknown') + '</strong><span class="badge badge-ok" style="font-size:10px">Active</span></div>';
                 html += '<span style="font-size:11px;color:var(--text-muted)">' + (i.installed_date ? fmtDate(i.installed_date) : '-') + ' &#x25BC;</span>';
                 html += '</div>';
                 html += '<div id="' + gid + '" style="display:none;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px" onclick="event.stopPropagation()">';
@@ -1090,12 +1237,7 @@ function renderPartsTabContent(active, removed) {
                 if (i.parts) html += '<div style="color:var(--text-muted)">Condition: ' + esc(i.parts.condition || '-') + '  Part #: ' + esc(i.parts.part_number || '-') + '</div>';
                 if (i.time_taken) html += '<div style="color:var(--text-muted)">Time taken: ' + esc(i.time_taken) + '</div>';
                 if (i.notes) html += '<div style="color:var(--text-muted);margin-top:4px">' + esc(i.notes) + '</div>';
-                if (!i.removed_date) {
-                    html += '<div style="margin-top:8px;display:flex;gap:6px;align-items:center">';
-                    html += '<button class="btn btn-secondary btn-sm" title="Keeps this in your records — just marks the part as no longer active on this vehicle" onclick="event.stopPropagation();showRemovePartModal(\'' + i.id + '\')">Mark Removed</button>';
-                    html += '<button class="btn btn-ghost btn-sm" title="Permanently delete this installation record — cannot be undone" onclick="event.stopPropagation();deleteInstallRecord(\'' + i.id + '\')">&#x1F5D1;&#xFE0F;</button>';
-                    html += '</div>';
-                }
+                if (!i.removed_date) html += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showRemovePartModal(\'' + i.id + '\')" >Mark Removed</button></div>';
                 html += '</div></div>';
             });
             html += '</div>';
@@ -1116,7 +1258,6 @@ function renderPartsTabContent(active, removed) {
             html += '<div>Installed: ' + fmtDate(i.installed_date) + (i.installed_mileage ? ' @ ' + i.installed_mileage.toLocaleString() + ' mi' : '') + '</div>';
             html += '<div style="color:var(--danger)">Removed: ' + fmtDate(i.removed_date) + (i.removal_reason ? ' — ' + esc(i.removal_reason) : '') + '</div>';
             if (i.time_taken) html += '<div style="color:var(--text-muted)">Time: ' + esc(i.time_taken) + '</div>';
-            html += '<div style="margin-top:8px"><button class="btn btn-ghost btn-sm" title="Permanently delete this installation record — cannot be undone" onclick="event.stopPropagation();deleteInstallRecord(\'' + i.id + '\')">&#x1F5D1;&#xFE0F; Delete Record</button></div>';
             html += '</div></div>';
         });
         html += '</div>';
