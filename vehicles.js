@@ -4,6 +4,7 @@
 // ─── VEHICLES ─────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── VEHICLES LIST PAGE ──────────────────────────────────────────────────────
+<<<<<<< HEAD
 async function renderVehicles() {
     var myToken = Date.now();
     const el = document.getElementById('view-vehicles');
@@ -21,6 +22,25 @@ async function renderVehicles() {
         console.error(err);
         return;
     }
+=======
+async function renderVehicles(){
+  var myToken = Date.now();
+  const el=document.getElementById('view-vehicles');
+  el.dataset.renderToken = myToken;
+  let vehicles=[];
+  let ownerProfiles=[];
+  try{
+    if(!_session.vehicles) el.innerHTML=viewLoading('Loading vehicles...');
+    [vehicles] = await Promise.all([getVehicles()]);
+    // Fetch owner assignments
+    var opRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id','is',null);
+    ownerProfiles = opRes.data || [];
+  }catch(err){
+    el.innerHTML=errBox(err.message, err.stack);
+    console.error(err);
+    return;
+  }
+>>>>>>> 7f6d53fda0a37f033e12fbcdc0b5f5ac699d5e7f
 
     let html = '';
     html = maybeShowTesterBanner() + html;
