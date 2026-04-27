@@ -159,11 +159,23 @@ function withTimeout(promise, ms){
 // ─── ERROR DISPLAY ───────────────────────────────────────────────────────────────────────────
 // Shows a friendly error box with refresh and optional bug report buttons
 function errBox(msg, techDetail){
-  // Use a global to pass the error to the bug report instead of inline JSON.stringify (which breaks HTML)
   if(currentUser){ window._lastErrorForBug = {msg:msg, view:_currentView}; }
+  // Detect the common first-load timeout — show a friendly explanation instead of scary error
+  var isFirstLoadTimeout = msg && (msg.indexOf('timed out') >= 0 || msg.indexOf('Request timed out') >= 0);
   var reportBtn = currentUser
     ? '<button class="btn btn-secondary btn-sm" onclick="openBugReportFromError()">&#x1F41B; Report Bug</button>'
     : '';
+  if(isFirstLoadTimeout){
+    return '<div style="padding:40px 32px">' +
+      '<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:24px;color:var(--text);font-size:13px;line-height:1.6">' +
+      '<strong style="font-size:16px;display:block;margin-bottom:10px;color:var(--warning)">&#x23F1;&#xFE0F; Taking a moment to wake up...</strong>' +
+      '<div style="color:var(--text-muted);margin-bottom:8px">This is a normal hosting-side delay on first load and not a real error.</div>' +
+      '<div style="color:var(--text-muted);margin-bottom:14px">Please press <strong>Retry</strong> to continue. If that does not work, try clicking another tab in the sidebar and coming back. If neither works after a few tries, then submit a bug report.</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button class="btn btn-primary btn-sm" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
+      reportBtn +
+      '</div></div></div>';
+  }
   return '<div style="padding:40px 32px">' +
     '<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:24px;color:var(--danger);font-size:13px;line-height:1.6">' +
     '<strong style="font-size:16px;display:block;margin-bottom:8px">&#x26A0;&#xFE0F; Something went wrong</strong>' +
@@ -532,10 +544,23 @@ async function signUp(){
   // Check invite code if provided
   var assignedRole = 'viewer';
   if(invCode){
-    var icRes = await db.from('invite_codes').select('*').eq('code', invCode).eq('is_active', true).single();
-    if(icRes.error || !icRes.data) return toast('Invalid or expired invite code', 'error');
-    assignedRole = icRes.data.role;
-    await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id', icRes.data.id);
+    // First check if code exists at all (regardless of active status)
+    var existsRes = await db.from('invite_codes').select('*').eq('code', invCode);
+    if(existsRes.error){
+      toast('Could not check invite code (database access issue). Please try again.', 'error');
+      return;
+    }
+    if(!existsRes.data || existsRes.data.length === 0){
+      toast('Invite code not found. Check spelling and try again.', 'error');
+      return;
+    }
+    var ic = existsRes.data[0];
+    if(!ic.is_active){
+      toast('This invite code has been deactivated. Ask an admin for a new code.', 'error');
+      return;
+    }
+    assignedRole = ic.role;
+    await db.from('invite_codes').update({uses:(ic.uses||0)+1}).eq('id', ic.id);
   }
   var r = await db.auth.signUp({email:email, password:password, options:{data:{username:username, real_email:email}}});
   if(r.error){ toast(r.error.message, 'error'); return; }
@@ -725,14 +750,21 @@ async function renderUserProfile(){
 
 
 async function applyInviteCodeFromProfile(){
-  var code = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  if(!code) return toast('Enter an invite code','error');
-  var icRes = await db.from('invite_codes').select('*').eq('code',code).eq('is_active',true).single();
-  if(icRes.error || !icRes.data) return toast('Invalid or expired invite code','error');
-  var newRole = icRes.data.role;
+  var codeInput = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!codeInput) return toast('Enter an invite code','error');
+  var existsRes = await db.from('invite_codes').select('*').eq('code', codeInput);
+  if(existsRes.error){ toast('Could not check invite code. Try again.','error'); return; }
+  if(!existsRes.data || existsRes.data.length === 0){
+    toast('Invite code not found. Check spelling and try again.','error'); return;
+  }
+  var ic = existsRes.data[0];
+  if(!ic.is_active){
+    toast('This invite code has been deactivated. Ask an admin for a new code.','error'); return;
+  }
+  var newRole = ic.role;
   var{error} = await db.from('profiles').update({role:newRole}).eq('id',currentUser.id);
   if(error){ toast(error.message,'error'); return; }
-  await db.from('invite_codes').update({uses:(icRes.data.uses||0)+1}).eq('id',icRes.data.id);
+  await db.from('invite_codes').update({uses:(ic.uses||0)+1}).eq('id',ic.id);
   _currentUserProfile = Object.assign({},_currentUserProfile,{role:newRole});
   _isAdmin = newRole === 'admin';
   var adminNav = document.getElementById('admin-nav');
@@ -1034,20 +1066,22 @@ async function renderFeedbackPage(){
       return f.is_published && f.is_resolved && f.type === 'Bug Report';
     });
 
-    var html = '<div class="page-header"><div style="text-align:center;flex:1">';
-    html += '<div class="page-title" style="font-size:42px">Feedback</div>';
-    html += '<div class="page-subtitle" style="font-size:12px">Bug Reports & Feature Suggestions</div>';
+    var html = '<div class="page-header"><div>';
+    html += '<div class="page-title">Feedback</div>';
+    html += '<div class="page-subtitle">Bug Reports & Feature Suggestions</div>';
     html += '</div></div>';
 
-    // ── KNOWN BUGS SECTION ─────────────────────────────────────────────
+    // ── KNOWN BUGS SECTION (always visible) ────────────────────────────
+    html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--warning)">';
+    html += '<div class="stat-label" style="margin-bottom:12px;color:var(--warning)">&#x1F41B; Known Bugs'+(knownBugs.length>0?' ('+knownBugs.length+')':'')+'</div>';
     if(knownBugs.length > 0){
-      html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--warning)">';
-      html += '<div class="stat-label" style="margin-bottom:12px;color:var(--warning)">&#x1F41B; Known Bugs ('+knownBugs.length+')</div>';
       knownBugs.forEach(function(b){
         html += renderKnownBug(b, false);
       });
-      html += '</div>';
+    } else {
+      html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic">No known bugs at this time. \u{1F389}</div>';
     }
+    html += '</div>';
 
     // ── SQUASHED BUGS SECTION (collapsible) ────────────────────────────
     if(squashedBugs.length > 0){
@@ -1169,7 +1203,18 @@ function renderFeedbackEntry(f){
 
 // ─── KNOWN BUG ADMIN ACTIONS ──────────────────────────────────────────────────────────────────
 async function publishKnownBug(id){
-  await db.from('feedback').update({is_published:true, updated_at:new Date().toISOString()}).eq('id',id);
+  // Get the bug to check if it has a title
+  var bRes = await db.from('feedback').select('title,description').eq('id',id).single();
+  var existingTitle = (bRes.data && bRes.data.title) || '';
+  var defaultTitle = existingTitle || ((bRes.data && bRes.data.description||'').substring(0,60));
+  var title = prompt('Bug title (shown to all users in Known Bugs):', defaultTitle);
+  if(title === null) return;
+  if(!title.trim()){ toast('Title cannot be empty','error'); return; }
+  await db.from('feedback').update({
+    is_published:true,
+    title:title.trim(),
+    updated_at:new Date().toISOString()
+  }).eq('id',id);
   toast('Published as known bug','success');
   await renderFeedbackPage();
 }
@@ -1385,6 +1430,143 @@ async function editComment(commentId, containerId, recordType, recordId){
 
 // ─── TESTER DASHBOARD BUTTON ─────────────────────────────────────────────────
 
+
+// ─── ANNOUNCEMENTS CARD ──────────────────────────────────────────────────────────────────────
+// Admins post announcements targeted to specific roles. Users see relevant ones on dashboard.
+// Resolved bug banners also appear here for unified messaging.
+async function renderAnnouncementsCard(){
+  var html = '<div class="card" style="margin-bottom:16px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">';
+  html += '<div class="stat-label" style="display:flex;align-items:center;gap:6px">';
+  html += '\u{1F4EC} Announcements';
+  html += '<span title="Notes from admins and resolved bug fixes appear here." style="cursor:help;color:var(--text-muted);font-size:13px">\u24D8</span>';
+  html += '</div>';
+  if(_isAdmin){
+    html += '<button class="btn btn-primary btn-sm" onclick="showAnnouncementModal()">+ New Announcement</button>';
+  }
+  html += '</div>';
+
+  // Resolved bug banners (existing system, now lives inside Announcements)
+  var bugBanners = '';
+  try{
+    var dismissed = (_currentUserProfile && _currentUserProfile.dismissed_resolutions) || [];
+    var bRes = await db.from('feedback').select('id,title,resolution_message')
+      .eq('is_published',true).eq('is_resolved',true)
+      .order('resolved_at',{ascending:false}).limit(5);
+    var bugs = (bRes.data||[]).filter(function(b){ return dismissed.indexOf(b.id) < 0; });
+    bugs.forEach(function(b){
+      bugBanners += '<div class="alert" style="background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+      bugBanners += '<span>\u2705</span>';
+      bugBanners += '<div style="flex:1;min-width:200px"><strong style="cursor:pointer;color:var(--success)" onclick="showView(\'feedback\')">'+esc(b.title||'Bug Fix')+'</strong>';
+      if(b.resolution_message) bugBanners += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">'+esc(b.resolution_message)+'</div>';
+      bugBanners += '</div>';
+      bugBanners += '<button class="btn btn-ghost btn-sm" onclick="dismissResolution(\''+b.id+'\')">Dismiss</button>';
+      bugBanners += '</div>';
+    });
+  }catch(e){}
+
+  // Admin announcements targeted to user role
+  var roleBanners = '';
+  try{
+    var myRole = (_currentUserProfile && _currentUserProfile.role) || 'viewer';
+    var aRes = await db.from('announcements').select('*').order('created_at',{ascending:false}).limit(20);
+    var anns = (aRes.data||[]).filter(function(a){
+      if(!a.target_role || a.target_role === 'all') return true;
+      return a.target_role === myRole;
+    });
+    anns.forEach(function(a){
+      roleBanners += '<div class="alert" style="background:rgba(99,102,241,.1);border-color:rgba(99,102,241,.3);margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">';
+      roleBanners += '<span>\u{1F4E3}</span>';
+      roleBanners += '<div style="flex:1;min-width:200px">';
+      if(a.title) roleBanners += '<strong>'+esc(a.title)+'</strong>';
+      if(a.body) roleBanners += '<div style="font-size:13px;color:var(--text-muted);margin-top:4px;white-space:pre-wrap">'+esc(a.body)+'</div>';
+      if(a.image_url) roleBanners += '<img src="'+esc(a.image_url)+'" style="max-width:100%;max-height:240px;border-radius:6px;margin-top:8px">';
+      roleBanners += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(a.created_at)+'</div>';
+      roleBanners += '</div>';
+      if(_isAdmin){
+        roleBanners += '<button class="btn btn-danger btn-sm" onclick="deleteAnnouncement(\''+a.id+'\')">Del</button>';
+      }
+      roleBanners += '</div>';
+    });
+  }catch(e){}
+
+  if(bugBanners || roleBanners){
+    html += bugBanners + roleBanners;
+  } else {
+    html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No announcements right now.</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ─── ADMIN: POST ANNOUNCEMENT ────────────────────────────────────────────────────────────────
+function showAnnouncementModal(){
+  var modal = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:520px">' +
+    '<div class="modal-header"><div class="modal-title">New Announcement</div>' +
+    '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<div class="form-group"><label>Visible to</label>' +
+    '<select class="form-control" id="ann-target">' +
+    '<option value="all">Everyone</option>' +
+    '<option value="owner">Owners only</option>' +
+    '<option value="tester">Testers only</option>' +
+    '<option value="guest">Guests only</option>' +
+    '<option value="viewer">Viewers only</option>' +
+    '<option value="admin">Admins only</option>' +
+    '</select></div>' +
+    '<div class="form-group"><label>Title</label>' +
+    '<input type="text" class="form-control" id="ann-title" placeholder="Short headline"></div>' +
+    '<div class="form-group"><label>Message</label>' +
+    '<textarea class="form-control" id="ann-body" rows="4" placeholder="What do you want to tell users?"></textarea></div>' +
+    '<div class="form-group"><label>Image (optional)</label>' +
+    '<input type="file" class="form-control" id="ann-image" accept="image/*"></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveAnnouncement()">Post Announcement</button>' +
+    '</div></div></div>';
+  showModal(modal);
+}
+
+async function saveAnnouncement(){
+  var target = val('ann-target') || 'all';
+  var title = val('ann-title');
+  var body = val('ann-body');
+  if(!title && !body) return toast('Add a title or message','error');
+  var imageUrl = null;
+  var fileEl = document.getElementById('ann-image');
+  var file = fileEl && fileEl.files && fileEl.files[0];
+  if(file){
+    try{
+      imageUrl = await uploadFile('parts-images', file);
+    }catch(e){
+      toast('Image upload failed: '+e.message,'error');
+      return;
+    }
+  }
+  var{error} = await db.from('announcements').insert({
+    title: title || null,
+    body: body || null,
+    image_url: imageUrl,
+    target_role: target,
+    created_by: currentUser.id
+  });
+  if(error){ toast(error.message,'error'); return; }
+  toast('Announcement posted','success');
+  closeModal();
+  // Refresh dashboard
+  if(_currentView === 'dashboard') await renderDashboard();
+}
+
+async function deleteAnnouncement(id){
+  if(!confirm('Delete this announcement?')) return;
+  await db.from('announcements').delete().eq('id', id);
+  toast('Deleted','success');
+  if(_currentView === 'dashboard') await renderDashboard();
+}
+
+
 function maybeShowTesterBanner(){
   var role = getEffectiveRole();
   // Viewer = default — show invite to join
@@ -1542,14 +1724,15 @@ async function renderDashboard(){
   const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
-  var resolutionBanners = await maybeShowResolutionBanners();
-  el.innerHTML=maybeShowTesterBanner()+resolutionBanners+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
+  var announcementsCard = await renderAnnouncementsCard();
+  el.innerHTML=maybeShowTesterBanner()+`<div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-subtitle">Welcome to the Chicken Zone 🐔</div></div></div>
   <div class="stat-grid">
     <div class="stat-card"><div class="stat-label">Parts in Stock</div><div class="stat-value">${totalParts||0}</div><div style="font-size:12px;color:var(--text-muted)">Inventory records</div></div>
     <div class="stat-card"><div class="stat-label">Vehicles</div><div class="stat-value">${totalVehicles||0}</div><div style="font-size:12px;color:var(--text-muted)">Registered</div></div>
     <div class="stat-card"><div class="stat-label">Low Stock</div><div class="stat-value" style="color:${lowStock.length>0?'var(--danger)':'var(--success)'}">${lowStock.length}</div><div style="font-size:12px;color:var(--text-muted)">Need restocking</div></div>
     <div class="stat-card"><div class="stat-label">Upcoming Service</div><div class="stat-value" style="color:${upcoming.length>0?'var(--warning)':'var(--success)'}">${upcoming.length}</div><div style="font-size:12px;color:var(--text-muted)">Due within 30 days</div></div>
   </div>
+  ${announcementsCard}
   ${upcoming.length>0?`<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⚠️ Upcoming Maintenance</div>${upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('')}</div>`:''}
   ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
   ${stalePhotoVehicles.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${stalePhotoVehicles.map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
@@ -1576,7 +1759,8 @@ function renderPartsList(el){
   if(!el) el=document.getElementById('view-parts');
   try{
   // Use cache as source of truth - dbInventory may be stale
-  const invSource = _session.inventory || dbInventory || [];
+  const allInv = _session.inventory || dbInventory || [];
+  const invSource = allInv.filter(function(p){ return !p.is_historical; });
   dbInventory = invSource;
   // Build combined list: GMT800 catalog + custom DB parts not in catalog
   const catalogIds=new Set(_catalog.map(p=>p.id));
@@ -1624,7 +1808,7 @@ function renderPartsList(el){
   const total=combined.length, inStock=combined.filter(p=>p._qty>0).length;
 
   el.innerHTML=`
-    <div class="page-header"><div style="text-align:center;flex:1"><div class="page-title" style="font-size:42px;text-align:center">Auto Parts</div><div class="page-subtitle" style="font-size:12px;text-align:center">${inStock} of ${total} parts in stock</div></div>
+    <div class="page-header"><div><div class="page-title">Auto Parts</div><div class="page-subtitle">${inStock} of ${total} parts in stock</div></div>
       <button class="btn btn-primary" onclick="showAddPartChoice()">+ Add New Part to Inventory</button>
     </div>
     <div class="table-wrap">
@@ -1983,7 +2167,39 @@ async function addToWishlistFromProfile(catalogId, name, cp){
 }
 
 // Variant that takes an in-memory prefill object rather than fetching from DB
-async function showWishlistModalPrefilled(item){
+async 
+
+// ─── CUSTOM "ADD TO WISHLIST" PROMPT ────────────────────────────────────────────────────────
+var _wishlistPromptName = '';
+function showAddToWishlistPrompt(partName){
+  _wishlistPromptName = partName;
+  var safeDisplay = esc(partName);
+  showModal(
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:400px">' +
+    '<div class="modal-header"><div class="modal-title">Last One Used</div></div>' +
+    '<div class="modal-body" style="padding:20px;text-align:center">' +
+    '<div style="font-size:14px;line-height:1.5">You just installed your last <strong>' + safeDisplay + '</strong>.</div>' +
+    '<div style="font-size:13px;color:var(--text-muted);margin-top:10px">Add it to your wishlist to remember to restock?</div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">No</button>' +
+    '<button class="btn btn-primary" onclick="confirmAddToWishlist()">Yes, Add to Wishlist</button>' +
+    '</div></div></div>'
+  );
+}
+
+function confirmAddToWishlist(){
+  var name = _wishlistPromptName;
+  closeModal();
+  showWishlistModalPrefilled({
+    id:null, name:name, part_number:null,
+    priority:'High', compatible_vehicles:'',
+    notes:'Restocking - last unit installed'
+  });
+}
+
+function showWishlistModalPrefilled(item){
   const catalogNames = _catalog.map(function(p){return p.name;});
   const customNames = (dbInventory||[]).map(function(p){return p.name;}).filter(function(n){return n && !catalogNames.includes(n);});
   const allNames = catalogNames.concat(customNames);
@@ -2590,7 +2806,7 @@ async function confirmDeleteInv(id,name){
 
 function printPartLabel(name,qrUrl,oem,location){
   const w=window.open('','_blank');
-  w.document.write(`<html><head><title>Label</title><style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;padding:20px;background:#fff}.label{border:2px solid #000;padding:14px;width:280px;text-align:center;border-radius:4px}h2{font-size:14px;margin:8px 0 3px;font-weight:bold}p{font-size:11px;margin:2px 0;color:#444}.footer{font-size:9px;color:#999;margin-top:8px}</style></head><body onload="window.print()"><div class="label"><img src="${qrUrl}" width="120" height="120"><h2>${name}</h2>${oem?`<p><strong>OEM:</strong> ${oem}</p>`:''}${location?`<p><strong>Loc:</strong> ${location}</p>`:''}<p class="footer">🐔 Chicken Zone</p></div></body></html>`);
+  w.document.write(`<html><head><title>Label</title><style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;padding:20px;background:#fff}.label{border:2px solid #000;padding:14px;width:280px;text-align:center;border-radius:4px}h2{font-size:14px;margin:8px 0 3px;font-weight:bold}p{font-size:11px;margin:2px 0;color:#444}.footer{font-size:9px;color:#999;margin-top:8px}</style></head><body ><div style="position:fixed;top:10px;right:10px"><button onclick="window.print()" style="padding:6px 14px;background:#0051BA;color:#fff;border:0;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600">🖨️ Print</button></div><div class="label"><img src="${qrUrl}" width="120" height="120"><h2>${name}</h2>${oem?`<p><strong>OEM:</strong> ${oem}</p>`:''}${location?`<p><strong>Loc:</strong> ${location}</p>`:''}<p class="footer">🐔 Chicken Zone</p></div></body></html>`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2614,7 +2830,7 @@ async function renderVehicles(){
   }
 
   let html='';
-  html+='<div class="page-header"><div style="text-align:center;flex:1"><div class="page-title" style="font-size:42px;text-align:center">Vehicles</div><div class="page-subtitle" style="font-size:12px;text-align:center">Car Profiles</div></div>';
+  html+='<div class="page-header"><div><div class="page-title">Vehicles</div><div class="page-subtitle">Car Profiles</div></div>';
   html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
   html+='<button class="btn btn-primary" onclick="showVehicleModal()">+ New Vehicle</button>';
   html+='<button class="btn btn-secondary" onclick="toast(\'Guest car feature coming soon!\',\'info\')">+ Guest</button>';
@@ -2817,18 +3033,34 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
 
   // Left: specs
   html += '<div class="card"><div class="stat-label" style="margin-bottom:12px">Vehicle Specs</div>';
-  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
-  html += '<div class="detail-field"><label>Engine</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(engine||'Not specified')+'</div></div>';
-  if(vOwner){ html += '<div class="detail-field"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:6px"><span style="font-size:16px">'+(vOwner.avatar_emoji||'🐇')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>'; } else { html += '<div></div>'; }
-  html += '</div>';
-  html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
-  if(v.commute_style && COMMUTE_STYLES[v.commute_style]){
-    var cs = COMMUTE_STYLES[v.commute_style];
-    html += '<div class="detail-field" style="margin-bottom:10px"><label>Commute Style</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(cs.label)+' <span style="font-size:12px;color:var(--text-muted)">(~'+cs.miles_per_year.toLocaleString()+' mi/yr)</span></div></div>';
+    // Vehicle specs in 2-column grid: Left = Engine/Owner/Interior, Right = Transmission/Commute Style
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px">';
+
+  // LEFT COLUMN
+  html += '<div>';
+  html += '<div class="detail-field" style="margin-bottom:10px"><label>Engine</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:18px;color:var(--accent)">'+esc(engine||'Not specified')+'</div></div>';
+  if(vOwner){
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="display:flex;align-items:center;gap:6px"><span style="font-size:18px">'+(vOwner.avatar_emoji||'\u{1F407}')+'</span><span style="color:'+(vOwner.user_color||'#FFD700')+';font-weight:600">'+esc(vOwner.display_name||vOwner.username||'Unknown')+'</span></div></div>';
+  } else {
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Owner</label><div class="value" style="color:var(--text-dim)">Not assigned</div></div>';
   }
   if(interiorColor){
     html += '<div class="detail-field" style="margin-bottom:10px"><label>Interior</label><div class="value" style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+colorToCss(interiorColor)+';border:1px solid rgba(255,255,255,.2)"></span>'+esc(interiorColor)+'</div></div>';
   }
+  html += '</div>';
+
+  // RIGHT COLUMN
+  html += '<div>';
+  html += '<div class="detail-field" style="margin-bottom:10px"><label>Transmission</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:18px;color:var(--accent)">'+esc(transmission||'Not specified')+'</div></div>';
+  if(v.commute_style && COMMUTE_STYLES[v.commute_style]){
+    var cs = COMMUTE_STYLES[v.commute_style];
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Commute Style</label><div class="value" style="font-family:Barlow Condensed,sans-serif;font-size:16px;color:var(--accent)">'+esc(cs.label)+' <span style="font-size:12px;color:var(--text-muted)">(~'+cs.miles_per_year.toLocaleString()+' mi/yr)</span></div></div>';
+  } else {
+    html += '<div class="detail-field" style="margin-bottom:10px"><label>Commute Style</label><div class="value" style="color:var(--text-dim)">Not set</div></div>';
+  }
+  html += '</div>';
+
+  html += '</div>';
   html += '</div>';
 
   // Right: mileage
@@ -2994,9 +3226,9 @@ async function deleteVehiclePhoto(photoId, vehicleId){
 
 
 
-async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style==='city'?'selected':''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style==='mixed'?'selected':''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style==='highway'?'selected':''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style==='weekend'?'selected':''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style==='worktruck'?'selected':''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
+async function showVehicleModal(id=null){let v=null;if(id){const{data}=await db.from('vehicles').select('*').eq('id',id).single();v=data}showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v?'Edit Vehicle':'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year||''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make||'')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model||'')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim||'')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color||'')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage||''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin||'')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style==='city'?'selected':''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style==='mixed'?'selected':''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style==='highway'?'selected':''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style==='weekend'?'selected':''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style==='worktruck'?'selected':''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Preferred Historical Date</label><input type="date" class="form-control" id="v-histdate" value="${v?.preferred_historical_date||''}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used as default when adding historical part installs (parts installed before you started using Chicken Zone)</div></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes||'')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v?`'${v.id}'`:'null'})">${v?'Save':'Add Vehicle'}</button></div></div></div>`);}
 
-async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null,commute_style:val('v-commute')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}if(!id){
+async function saveVehicle(id){const year=parseInt(document.getElementById('v-year').value);const make=val('v-make'),model=val('v-model');if(!year||!make||!model)return toast('Year, make, and model are required','error');const data={year,make,model,trim:val('v-trim')||null,color:val('v-color')||null,current_mileage:parseInt(document.getElementById('v-miles').value)||0,vin:val('v-vin')||null,notes:val('v-notes')||null,commute_style:val('v-commute')||null,preferred_historical_date:val('v-histdate')||null};let error;if(id){({error}=await db.from('vehicles').update(data).eq('id',id))}else{data.created_by=currentUser.id;({error}=await db.from('vehicles').insert(data))}if(error){toast(error.message,'error');return}if(!id){
     // Get the new vehicle ID
     var{data:newV}=await db.from('vehicles').select('id').order('created_at',{ascending:false}).limit(1).single();
     if(newV){
@@ -3054,48 +3286,279 @@ function saveInstallFromModal(){
   saveInstall(v?v.value:'');
 }
 
-async function saveInstall(vehicleId){
-  if(!vehicleId)return toast('Please select a vehicle','error');
-  const partId=document.getElementById('ip-part').value;
-  if(!partId)return toast('Please select a part','error');
-  const timeTaken=val('ip-time')||null;
-  const{data:p}=await db.from('parts').select('quantity,name,catalog_part_id').eq('id',partId).single();
-  const{error}=await db.from('part_installations').insert({
-    part_id:partId,vehicle_id:vehicleId,
-    installed_date:val('ip-date')||null,
-    installed_mileage:parseInt(document.getElementById('ip-miles').value)||null,
-    time_taken:timeTaken,
-    notes:val('ip-notes')||null
+
+// ─── HISTORICAL PART INSTALL ──────────────────────────────────────────────────────────────────
+// Lets users record parts that were installed before they started using the app,
+// or parts they had on hand when installing. Creates install record only — no inventory entry.
+
+async function showHistoricalInstallModal(vehicleId){
+  // Fetch the vehicle to get preferred_historical_date if set
+  var vRes = await db.from('vehicles').select('preferred_historical_date').eq('id', vehicleId).single();
+  var defaultDate = (vRes.data && vRes.data.preferred_historical_date) || '';
+
+  // Build category list from catalog
+  var cats = getCategories();
+  var catOpts = '<option value="">Select a category...</option>';
+  cats.forEach(function(c){
+    catOpts += '<option value="'+esc(c)+'">'+esc(c)+'</option>';
   });
-  if(error){toast(error.message,'error');return;}
-  const newQty=(p&&p.quantity>0)?p.quantity-1:0;
-  if(p&&p.quantity>0) await db.from('parts').update({quantity:newQty}).eq('id',partId);
+
+  var modal = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:480px">' +
+    '<div class="modal-header"><div class="modal-title">+ Historical Install</div>' +
+    '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">For parts that were installed before you started using Chicken Zone, or parts you already had on hand. This won\'t add to inventory — just records the install.</div>' +
+
+    '<div class="form-group"><label>Part Type</label>' +
+    '<select class="form-control" id="hi-cat" onchange="updateHistoricalPartList()">' + catOpts + '</select></div>' +
+
+    '<div class="form-group"><label>Part Name</label>' +
+    '<select class="form-control" id="hi-part" onchange="updateHistoricalOEM()" disabled>' +
+    '<option value="">Select a category first...</option></select></div>' +
+
+    '<div class="form-group"><label>OEM Part Number</label>' +
+    '<input type="text" class="form-control" id="hi-oem" placeholder="(auto-filled when part selected)" readonly></div>' +
+
+    '<div class="grid-2">' +
+    '<div class="form-group"><label>Condition</label>' +
+    '<select class="form-control" id="hi-cond">' +
+    '<option value="New" selected>New</option>' +
+    '<option value="Used - Good">Used - Good</option>' +
+    '<option value="Used - Fair">Used - Fair</option>' +
+    '<option value="Used - Poor">Used - Poor</option>' +
+    '<option value="Unknown">Unknown</option>' +
+    '</select></div>' +
+    '<div class="form-group"><label>Mileage at Install</label>' +
+    '<input type="number" class="form-control" id="hi-miles" placeholder="optional"></div>' +
+    '</div>' +
+
+    '<div class="grid-2">' +
+    '<div class="form-group"><label>Date Installed</label>' +
+    '<input type="date" class="form-control" id="hi-date" value="'+defaultDate+'"></div>' +
+    '<div class="form-group" style="display:flex;align-items:center;padding-top:24px">' +
+    '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0">' +
+    '<input type="checkbox" id="hi-no-date" onchange="if(this.checked)document.getElementById(\'hi-date\').value=\'\'"> ' +
+    '<span style="font-size:12px">I don\'t know the date</span></label></div>' +
+    '</div>' +
+
+    '<div class="form-group"><label>Notes</label>' +
+    '<textarea class="form-control" id="hi-notes" rows="2" placeholder="optional"></textarea></div>' +
+
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveHistoricalInstall(\''+vehicleId+'\')">Save</button>' +
+    '</div></div></div>';
+
+  showModal(modal);
+}
+
+function updateHistoricalPartList(){
+  var cat = val('hi-cat');
+  var sel = document.getElementById('hi-part');
+  if(!sel) return;
+  if(!cat){
+    sel.innerHTML = '<option value="">Select a category first...</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  var partsInCat = _catalog.filter(function(p){ return p.cat === cat; });
+  var opts = '<option value="">Select a part...</option>';
+  partsInCat.forEach(function(p){
+    opts += '<option value="'+p.id+'" data-oem="'+esc(p.oem)+'" data-name="'+esc(p.name)+'">'+esc(p.name)+'</option>';
+  });
+  sel.innerHTML = opts;
+  document.getElementById('hi-oem').value = '';
+}
+
+function updateHistoricalOEM(){
+  var sel = document.getElementById('hi-part');
+  var opt = sel.options[sel.selectedIndex];
+  var oemEl = document.getElementById('hi-oem');
+  if(opt && opt.dataset && opt.dataset.oem){
+    oemEl.value = opt.dataset.oem;
+  } else {
+    oemEl.value = '';
+  }
+}
+
+async function saveHistoricalInstall(vehicleId){
+  var catalogId = val('hi-part');
+  if(!catalogId) return toast('Select a part','error');
+  var partSel = document.getElementById('hi-part');
+  var partOpt = partSel.options[partSel.selectedIndex];
+  var partName = partOpt.dataset.name || '';
+  var oem = val('hi-oem');
+  var cond = val('hi-cond') || 'New';
+  var miles = parseInt(document.getElementById('hi-miles').value) || null;
+  var noDate = document.getElementById('hi-no-date').checked;
+  var dateInstalled = noDate ? null : (val('hi-date') || null);
+  var notes = val('hi-notes') || null;
+
+  // Create a parts row with quantity 0 + is_historical=true so it doesn't pollute inventory
+  var partRow = {
+    name: partName,
+    catalog_part_id: catalogId,
+    part_number: oem || null,
+    condition: cond,
+    quantity: 0,
+    source: 'Historical',
+    is_historical: true
+  };
+  var{data:newPart, error:partErr} = await db.from('parts').insert(partRow).select().single();
+  if(partErr){ toast(partErr.message,'error'); return; }
+
+  // Create install record linked to the historical part
+  var installRow = {
+    part_id: newPart.id,
+    vehicle_id: vehicleId,
+    installed_date: dateInstalled,
+    installed_mileage: miles,
+    notes: notes,
+    is_historical: true
+  };
+  var{error:instErr} = await db.from('part_installations').insert(installRow);
+  if(instErr){ toast(instErr.message,'error'); return; }
+
+  toast('Historical install logged','success');
   invalidate();
   closeModal();
-  toast('Part installed!','success');
-  if(newQty===0){
-    var pname=p?p.name:'this part';
-    var pcid=p?p.catalog_part_id:null;
-    setTimeout(function(){
-      if(confirm('Last one used! Add '+pname+' to wishlist to restock?')){
-        showWishlistModalPrefilled({id:null,name:pname,part_number:null,priority:'High',compatible_vehicles:'',notes:'Restocking - last unit installed'});
-      }
-    },400);
+  setTimeout(async function(){
+    if(_currentVehicleProfile.id) await refreshVehicleView();
+  }, 200);
+}
+
+
+async function saveInstall(vehicleId){
+  if(!vehicleId) return toast('Please select a vehicle','error');
+  var partId = document.getElementById('ip-part').value;
+  if(!partId) return toast('Please select a part','error');
+  var timeTaken = val('ip-time') || null;
+  var pRes = await db.from('parts').select('quantity,name,catalog_part_id').eq('id',partId).single();
+  var p = pRes.data;
+  var{error} = await db.from('part_installations').insert({
+    part_id: partId, vehicle_id: vehicleId,
+    installed_date: val('ip-date') || null,
+    installed_mileage: parseInt(document.getElementById('ip-miles').value) || null,
+    time_taken: timeTaken,
+    notes: val('ip-notes') || null
+  });
+  if(error){ toast(error.message,'error'); return; }
+  var newQty = (p && p.quantity > 0) ? p.quantity - 1 : 0;
+  if(p && p.quantity > 0){
+    await db.from('parts').update({quantity:newQty}).eq('id',partId);
   }
-  await refreshVehicleView();
+  // Force-clear ALL session caches so next render is fully fresh
+  invalidate();
+  closeModal();
+  toast('Part installed!', 'success');
+  // Show wishlist prompt if part hit 0
+  if(newQty === 0){
+    var pname = p ? p.name : 'this part';
+    setTimeout(function(){ showAddToWishlistPrompt(pname); }, 500);
+  }
+  // Wait briefly for modal close, then refresh — avoids race with cancellation token
+  setTimeout(async function(){
+    if(_currentVehicleProfile.id){
+      await refreshVehicleView();
+    }
+  }, 300);
 }
 
 async function showRemovePartModal(installId){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Mark Part Removed</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Date Removed</label><input type="date" class="form-control" id="rp-date" value="${new Date().toISOString().split('T')[0]}"></div><div class="form-group"><label>Reason</label><input type="text" class="form-control" id="rp-reason" placeholder="e.g. Failed early, Upgraded, Swapped"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="markRemoved('${installId}')">Confirm</button></div></div></div>`)}
 
 async function markRemoved(installId){const{error}=await db.from('part_installations').update({removed_date:val('rp-date')||new Date().toISOString().split('T')[0],removal_reason:val('rp-reason')||null}).eq('id',installId);if(error){toast(error.message,'error');return}toast('Marked removed','success');invalidate();closeModal();await refreshVehicleView()}
 
-async function showReminderModal(vehicleId){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Add Maintenance Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Title *</label><input type="text" class="form-control" id="mr-title" list="rem-list" placeholder="e.g. Oil Change"><datalist id="rem-list"><option>Oil Change</option><option>Tire Rotation</option><option>Brake Inspection</option><option>Transmission Fluid</option><option>Coolant Flush</option><option>Spark Plugs</option><option>Air Filter</option><option>Differential Fluid</option><option>Transfer Case Fluid</option><option>Ball Joint Inspection</option></datalist></div><div class="form-group"><label>Description</label><input type="text" class="form-control" id="mr-desc"></div><div class="form-group"><label>Reminder Type</label><select class="form-control" id="mr-type" onchange="toggleRF()"><option value="mileage">Mileage Based</option><option value="time">Time Based</option><option value="both">Both</option></select></div><div class="grid-2"><div class="form-group" id="mr-mg"><label>Interval (Miles)</label><input type="number" class="form-control" id="mr-miles" placeholder="e.g. 5000"></div><div class="form-group" id="mr-dg" style="display:none"><label>Interval (Days)</label><input type="number" class="form-control" id="mr-days" placeholder="e.g. 180"></div></div><div class="grid-2"><div class="form-group"><label>Last Done Date</label><input type="date" class="form-control" id="mr-ld"></div><div class="form-group"><label>Last Done Mileage</label><input type="number" class="form-control" id="mr-lm"></div></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveReminder('${vehicleId}')">Add</button></div></div></div>`)}
+async function showReminderModal(vehicleId, kind){
+  kind = kind || 'follow_up';
+  var titleText = kind === 'routine' ? 'Add Routine Maintenance' : 'Add Follow-up';
+  var btnLabel = kind === 'routine' ? 'Add Routine' : 'Add Follow-up';
+  showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${titleText}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="form-group"><label>Title *</label><input type="text" class="form-control" id="mr-title" list="rem-list" placeholder="e.g. Oil Change"><datalist id="rem-list"><option>Oil Change</option><option>Tire Rotation</option><option>Brake Inspection</option><option>Transmission Fluid</option><option>Coolant Flush</option><option>Spark Plugs</option><option>Air Filter</option><option>Differential Fluid</option><option>Transfer Case Fluid</option><option>Ball Joint Inspection</option></datalist></div><div class="form-group"><label>Description</label><input type="text" class="form-control" id="mr-desc"></div><div class="form-group"><label>Reminder Type</label><select class="form-control" id="mr-type" onchange="toggleRF()"><option value="mileage">Mileage Based</option><option value="time">Time Based</option><option value="both">Both</option></select></div><div class="grid-2"><div class="form-group" id="mr-mg"><label>Interval (Miles)</label><input type="number" class="form-control" id="mr-miles" placeholder="e.g. 5000"></div><div class="form-group" id="mr-dg" style="display:none"><label>Interval (Days)</label><input type="number" class="form-control" id="mr-days" placeholder="e.g. 180"></div></div><div class="grid-2"><div class="form-group"><label>Last Done Date</label><input type="date" class="form-control" id="mr-ld"></div><div class="form-group"><label>Last Done Mileage</label><input type="number" class="form-control" id="mr-lm"></div></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="rem-save-btn" onclick="saveReminder('${vehicleId}','${kind}')">${btnLabel}</button></div></div></div>`)}
 
 function toggleRF(){const t=document.getElementById('mr-type').value;document.getElementById('mr-mg').style.display=(t==='mileage'||t==='both')?'block':'none';document.getElementById('mr-dg').style.display=(t==='time'||t==='both')?'block':'none'}
 
-async function saveReminder(vehicleId){const title=val('mr-title');if(!title)return toast('Title required','error');const type=document.getElementById('mr-type').value;const im=parseInt(document.getElementById('mr-miles').value)||null,id=parseInt(document.getElementById('mr-days').value)||null,ld=val('mr-ld')||null,lm=parseInt(document.getElementById('mr-lm').value)||null;let nd=null,nm=null;if(ld&&id){const d=new Date(ld);d.setDate(d.getDate()+id);nd=d.toISOString().split('T')[0]}if(lm&&im)nm=lm+im;const{error}=await db.from('maintenance_reminders').insert({vehicle_id:vehicleId,title,description:val('mr-desc')||null,reminder_type:type,interval_miles:im,interval_days:id,last_done_date:ld,last_done_mileage:lm,next_due_date:nd,next_due_mileage:nm});if(error){toast(error.message,'error');return}toast('Reminder added!','success');invalidate();closeModal();await refreshVehicleView()}
+async function saveReminder(vehicleId, kind){
+  kind = kind || 'follow_up';
+  var title = val('mr-title');
+  if(!title) return toast('Title required','error');
+  var type = document.getElementById('mr-type').value;
+  var im = parseInt(document.getElementById('mr-miles').value) || null;
+  var id_ = parseInt(document.getElementById('mr-days').value) || null;
+  var ld = val('mr-ld') || null;
+  var lm = parseInt(document.getElementById('mr-lm').value) || null;
+  var nd = null, nm = null;
+  if(ld && id_){ var d = new Date(ld); d.setDate(d.getDate()+id_); nd = d.toISOString().split('T')[0]; }
+  if(lm && im) nm = lm + im;
+  var rec = {
+    vehicle_id: vehicleId, title: title, description: val('mr-desc')||null,
+    reminder_type: type, interval_miles: im, interval_days: id_,
+    last_done_date: ld, last_done_mileage: lm,
+    next_due_date: nd, next_due_mileage: nm,
+    is_routine: kind === 'routine',
+    is_active: true
+  };
+  var{error} = await db.from('maintenance_reminders').insert(rec);
+  if(error){ toast(error.message,'error'); return; }
+  toast(kind === 'routine' ? 'Routine added!' : 'Follow-up added!', 'success');
+  invalidate();
+  closeModal();
+  await refreshVehicleView();
+}
 
-async function markReminderDone(reminderId,vehicleId,currentMileage){const{data:r}=await db.from('maintenance_reminders').select('*').eq('id',reminderId).single();if(!r)return;const today=new Date().toISOString().split('T')[0];let nd=null,nm=null;if(r.interval_days){const d=new Date();d.setDate(d.getDate()+r.interval_days);nd=d.toISOString().split('T')[0]}if(r.interval_miles&&currentMileage)nm=parseInt(currentMileage)+r.interval_miles;await Promise.all([db.from('maintenance_reminders').update({last_done_date:today,last_done_mileage:currentMileage||null,next_due_date:nd,next_due_mileage:nm,snoozed_until_date:null,snoozed_until_mileage:null}).eq('id',reminderId),db.from('service_history').insert({vehicle_id:vehicleId,service_type:r.title,description:'Completed via maintenance reminder',performed_date:today,mileage_at_service:currentMileage||null})]);toast('Done! Service record logged.','success');invalidate();await refreshVehicleView()}
+async function markReminderDone(reminderId, vehicleId, currentMileage){
+  var r = (await db.from('maintenance_reminders').select('*').eq('id',reminderId).single()).data;
+  if(!r) return;
+  var today = new Date().toISOString().split('T')[0];
+  var isFollowUp = !r.is_auto && !r.is_routine;
+  if(isFollowUp){
+    // Follow-up: ask for comment then delete + log to service history + add comment to vehicle
+    var note = prompt('Add a comment about completing "'+r.title+'" (visible in vehicle comments):');
+    if(note === null) return; // cancelled
+    await Promise.all([
+      db.from('maintenance_reminders').delete().eq('id', reminderId),
+      db.from('service_history').insert({
+        vehicle_id: vehicleId,
+        service_type: r.title,
+        description: note || 'Follow-up completed',
+        performed_date: today,
+        mileage_at_service: currentMileage || null
+      })
+    ]);
+    if(note && note.trim()){
+      // Add to vehicle comments table
+      var uname = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'User';
+      var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
+      await db.from('comments').insert({
+        record_type: 'vehicle', record_id: vehicleId,
+        body: 'Follow-up done: '+r.title+' — '+note,
+        user_id: currentUser.id, username: uname, user_color: ucolor
+      });
+    }
+    toast('Follow-up done & logged!', 'success');
+  } else {
+    // Routine: recurring - update next due dates
+    var nd = null, nm = null;
+    if(r.interval_days){ var d = new Date(); d.setDate(d.getDate() + r.interval_days); nd = d.toISOString().split('T')[0]; }
+    if(r.interval_miles && currentMileage) nm = parseInt(currentMileage) + r.interval_miles;
+    await Promise.all([
+      db.from('maintenance_reminders').update({
+        last_done_date: today, last_done_mileage: currentMileage || null,
+        next_due_date: nd, next_due_mileage: nm,
+        snoozed_until_date: null, snoozed_until_mileage: null
+      }).eq('id', reminderId),
+      db.from('service_history').insert({
+        vehicle_id: vehicleId, service_type: r.title,
+        description: 'Completed via maintenance reminder',
+        performed_date: today, mileage_at_service: currentMileage || null
+      })
+    ]);
+    toast('Done! Service record logged.', 'success');
+  }
+  invalidate();
+  await refreshVehicleView();
+}
 
 async function showSnoozeModal(reminderId,title){showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px"><div class="modal-header"><div class="modal-title">Snooze Reminder</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div style="margin-bottom:16px;font-size:13px;color:var(--text-muted)">Snoozing: <strong style="color:var(--text)">${esc(title)}</strong></div><div class="form-group"><label>Snooze Until Date</label><input type="date" class="form-control" id="sn-date"></div><div style="text-align:center;color:var(--text-dim);font-size:12px;margin:4px 0"> -  or  - </div><div class="form-group"><label>Snooze Until Mileage</label><input type="number" class="form-control" id="sn-miles"></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="snoozeReminder('${reminderId}')">Snooze</button></div></div></div>`)}
 
@@ -3134,10 +3597,10 @@ function renderServiceList(services){
   if(!services||services.length===0) return '<div class="empty-state"><div class="empty-icon">&#x1F4CB;</div><p>No service records yet</p></div>';
   services.forEach(function(s){
     html+='<div class="service-row"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div>';
-    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:700;text-transform:uppercase;color:var(--ku-blue)">'+esc(s.service_type||'Service')+'</div>';
+    html+='<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:700;text-transform:uppercase;color:#ffffff">'+esc(s.service_type||'Service')+'</div>';
     var meta=[s.performed_date?fmtDate(s.performed_date):null,s.mileage_at_service?s.mileage_at_service.toLocaleString()+' mi':null,s.performed_by?'by '+esc(s.performed_by):null].filter(Boolean).join(' &middot; ');
     if(meta) html+='<div style="font-size:12px;color:var(--text-muted);margin-top:3px">'+meta+'</div>';
-    if(s.description) html+='<div style="margin-top:8px;font-size:13px">'+esc(s.description)+'</div>';
+    if(s.description) html+='<div style="margin-top:8px;font-size:13px;color:var(--ku-blue)">'+esc(s.description)+'</div>';
     html+='</div><button class="btn btn-ghost btn-sm no-print" onclick="deleteServiceRecord(\''+s.id+'\')">&#x1F5D1;&#xFE0F;</button></div></div>';
   });
   return html;
@@ -3149,6 +3612,7 @@ function renderPartsTab(installs, vehicleId){
   var html='<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
   html+='<input type="text" class="form-control" id="parts-tab-search" placeholder="&#x1F50D; Search installed parts..." style="flex:1;font-size:13px" oninput="filterInstalledParts(this.value)">';
   html+='<button class="btn btn-primary btn-sm" onclick="showInstallPartModal(_currentVehicleProfile.id,null,null,null,null)">+ Log Install</button>';
+  html+='<button class="btn btn-secondary btn-sm" onclick="showHistoricalInstallModal(_currentVehicleProfile.id)">+ History</button>';
   html+='</div>';
   html+='<div id="parts-tab-list">';
   html+=renderPartsTabContent(active, removed);
@@ -3249,33 +3713,93 @@ function toggleInstallHistory(id){
 }
 
 function renderRemindersTab(reminders, vehicle, vehicleId){
-  var today=new Date();
-  var html='<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
-  html+='<input type="text" class="form-control" id="rem-search" placeholder="&#x1F50D; Search reminders..." style="flex:1;font-size:13px" oninput="filterReminders(this.value)">';
-  html+='<button class="btn btn-primary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id)">+ Add Reminder</button>';
-  html+='</div>';
-  var _remCache=reminders; var _vehCache=vehicle;
-  if(!reminders||reminders.length===0) return html+'<div class="empty-state"><div class="empty-icon">&#x23F0;</div><p>No maintenance reminders</p></div>';
-  reminders.forEach(function(r){
-    var snoozed=r.snoozed_until_date&&new Date(r.snoozed_until_date)>today;
-    var overdue=!snoozed&&((r.next_due_date&&new Date(r.next_due_date)<=today)||(r.next_due_mileage&&(vehicle.current_mileage||0)>=r.next_due_mileage));
-    var cls=overdue?'overdue':'';var sb='';
-    if(snoozed) sb='<span class="badge badge-snoozed">Snoozed</span>';
-    else if(overdue) sb='<span class="badge badge-overdue">Overdue</span>';
-    else if(r.next_due_date){var d=(new Date(r.next_due_date)-today)/86400000;if(d<=30){cls='due-soon';sb='<span class="badge badge-fair">Due in '+Math.ceil(d)+'d</span>';}}
-    html+='<div class="reminder-card '+cls+'">';
-    html+='<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div>';
-    html+='<div style="font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+esc(r.title)+' '+sb+'</div>';
-    if(r.description) html+='<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(r.description)+'</div>';
-    var meta=[r.interval_miles?'Every '+r.interval_miles.toLocaleString()+' mi':null,r.interval_days?'every '+r.interval_days+' days':null,r.next_due_date?'Next: '+fmtDate(r.next_due_date):null,r.next_due_mileage?'Next: '+r.next_due_mileage.toLocaleString()+' mi':null].filter(Boolean).join(' &middot; ');
-    if(meta) html+='<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+meta+'</div>';
-    html+='</div>';
-    html+='<div class="flex-row no-print" style="flex-wrap:wrap;gap:4px">';
-    html+='<button class="btn btn-secondary btn-sm" onclick="showSnoozeModal(\''+r.id+'\',\''+esc(r.title).replace(/\'/g,"&#39;")+'\')">Snooze</button>';
-    html+='<button class="btn btn-secondary btn-sm" onclick="markReminderDone(\''+r.id+'\',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
-    html+='<button class="btn btn-ghost btn-sm" onclick="deleteReminder(\''+r.id+'\')">Del</button>';
-    html+='</div></div></div>';
-  });
+  var today = new Date();
+  var html = '<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
+  html += '<input type="text" class="form-control" id="rem-search" placeholder="&#x1F50D; Search reminders..." style="flex:1;font-size:13px" oninput="filterReminders(this.value)">';
+  html += '<button class="btn btn-primary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id,\'follow_up\')">+ Follow-up</button>';
+  html += '<button class="btn btn-secondary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id,\'routine\')">+ Routine</button>';
+  html += '</div>';
+
+  if(!reminders || reminders.length === 0){
+    return html + '<div class="empty-state"><div class="empty-icon">&#x23F0;</div><p>No maintenance reminders</p></div>';
+  }
+
+  // Split into Routine (auto + repeating) and Planned (one-off, follow-ups)
+  var routine = reminders.filter(function(r){ return r.is_auto || r.is_routine; });
+  var planned = reminders.filter(function(r){ return !r.is_auto && !r.is_routine; });
+
+  function renderReminderCard(r){
+    var snoozed = r.snoozed_until_date && new Date(r.snoozed_until_date) > today;
+    var overdue = !snoozed && ((r.next_due_date && new Date(r.next_due_date) <= today) || (r.next_due_mileage && (vehicle.current_mileage||0) >= r.next_due_mileage));
+    var cls = overdue ? 'overdue' : '';
+    var sb = '';
+    if(snoozed) sb = '<span class="badge badge-snoozed">Snoozed</span>';
+    else if(overdue) sb = '<span class="badge badge-overdue">Overdue</span>';
+    else if(r.next_due_date){
+      var d = (new Date(r.next_due_date) - today) / 86400000;
+      if(d <= 30){ cls = 'due-soon'; sb = '<span class="badge badge-fair">Due in '+Math.ceil(d)+'d</span>'; }
+    }
+
+    // Frequency tooltip text for the info icon
+    var freqText = '';
+    if(r.interval_miles && r.interval_days) freqText = 'Every '+r.interval_miles.toLocaleString()+' mi or '+r.interval_days+' days';
+    else if(r.interval_miles) freqText = 'Every '+r.interval_miles.toLocaleString()+' mi';
+    else if(r.interval_days) freqText = 'Every '+r.interval_days+' days';
+    else freqText = 'One-time';
+
+    var c = '<div class="reminder-card '+cls+'">';
+    c += '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div style="flex:1">';
+    c += '<div style="font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
+    c += esc(r.title);
+    c += '<span title="'+esc(freqText)+'" style="cursor:help;color:var(--text-muted);font-size:13px">&#9432;</span>';
+    c += ' '+sb+'</div>';
+    if(r.description) c += '<div style="font-size:12px;color:var(--ku-blue);margin-top:4px">'+esc(r.description)+'</div>';
+
+    // Days Until line + previous install date
+    var daysUntilLine = '';
+    if(r.next_due_date){
+      var diff = Math.ceil((new Date(r.next_due_date) - today) / 86400000);
+      var color = diff < 0 ? 'var(--danger)' : (diff < 14 ? 'var(--warning)' : 'var(--text-muted)');
+      daysUntilLine = '<span style="color:'+color+';font-weight:600">Days Until: '+diff+'</span> <span style="color:var(--text-muted)">('+fmtDate(r.next_due_date)+')</span>';
+    } else if(r.next_due_mileage){
+      var mDiff = r.next_due_mileage - (vehicle.current_mileage || 0);
+      var mColor = mDiff < 0 ? 'var(--danger)' : (mDiff < 500 ? 'var(--warning)' : 'var(--text-muted)');
+      daysUntilLine = '<span style="color:'+mColor+';font-weight:600">Miles Until: '+mDiff.toLocaleString()+'</span>';
+    }
+    if(r.last_done_date){
+      daysUntilLine += (daysUntilLine?' &middot; ':'')+'<span style="color:var(--text-muted)">Last done: '+fmtDate(r.last_done_date)+'</span>';
+    }
+    if(daysUntilLine) c += '<div style="font-size:12px;margin-top:6px">'+daysUntilLine+'</div>';
+
+    c += '</div>';
+    c += '<div class="flex-row no-print" style="flex-wrap:wrap;gap:4px">';
+    c += '<button class="btn btn-secondary btn-sm" onclick="showSnoozeModal(\''+r.id+'\',\''+esc(r.title).replace(/\'/g,"&#39;")+'\')">Snooze</button>';
+    c += '<button class="btn btn-secondary btn-sm" onclick="markReminderDone(\''+r.id+'\',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
+    c += '<button class="btn btn-ghost btn-sm" onclick="deleteReminder(\''+r.id+'\')">Del</button>';
+    c += '</div></div></div>';
+    return c;
+  }
+
+  // Routine section
+  html += '<div style="margin-bottom:24px">';
+  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--accent)">&#x1F504; Routine ('+routine.length+')</div>';
+  if(routine.length === 0){
+    html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No routine maintenance set up</div>';
+  } else {
+    routine.forEach(function(r){ html += renderReminderCard(r); });
+  }
+  html += '</div>';
+
+  // Planned section
+  html += '<div>';
+  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--info)">&#x1F4CC; Planned / Follow-ups ('+planned.length+')</div>';
+  if(planned.length === 0){
+    html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No follow-ups planned</div>';
+  } else {
+    planned.forEach(function(r){ html += renderReminderCard(r); });
+  }
+  html += '</div>';
+
   return html;
 }
 
@@ -3286,6 +3810,7 @@ async function printVehicleProfile(vehicleId){
   const active=(installs||[]).filter(i=>!i.removed_date);
   const w=window.open('','_blank');
   w.document.write(`<html><head><title>${v.year} ${v.make} ${v.model} Profile</title><style>body{font-family:Arial,sans-serif;padding:30px;color:#111;font-size:13px}h1{font-size:24px;margin:0 0 4px;color:#0051BA}h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #0051BA;padding-bottom:4px;margin:20px 0 12px;color:#0051BA}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;padding:5px 8px}td{padding:6px 8px;border-bottom:1px solid #eee;font-size:12px}.sub{color:#E8000D;font-size:13px;margin-bottom:20px;font-weight:600}.footer{margin-top:30px;font-size:11px;color:#999;border-top:1px solid #ddd;padding-top:10px}</style></head><body>
+    <div style="position:sticky;top:0;background:#fff;padding:10px 0;border-bottom:1px solid #ddd;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:11px;color:#666">Click Print, then close this tab</span><button onclick="window.print()" style="padding:8px 20px;background:#0051BA;color:#fff;border:0;border-radius:4px;font-size:14px;cursor:pointer;font-weight:600">🖨️ Print This</button></div>
     <h1>🚗 ${v.year} ${v.make} ${v.model}${v.trim?' '+v.trim:''}</h1>
     <div class="sub">${[v.color,v.current_mileage?v.current_mileage.toLocaleString()+' miles':null,v.vin?'VIN: '+v.vin:null].filter(Boolean).join(' · ')}</div>
     ${v.notes?`<div style="margin-bottom:16px;padding:10px;background:#f9f9f9;border-left:3px solid #0051BA;font-size:12px">${v.notes}</div>`:''}
@@ -3295,7 +3820,7 @@ async function printVehicleProfile(vehicleId){
     ${(!services||services.length===0)?'<p style="color:#999">None recorded</p>':`<table><thead><tr><th>Service</th><th>Date</th><th>Mileage</th><th>By</th><th>Notes</th></tr></thead><tbody>${services.map(s=>`<tr><td><strong>${s.service_type||' - '}</strong>${s.description?`<br><span style="color:#666;font-size:11px">${s.description}</span>`:''}</td><td>${s.performed_date?new Date(s.performed_date+'T12:00:00').toLocaleDateString():' - '}</td><td>${s.mileage_at_service?s.mileage_at_service.toLocaleString()+' mi':' - '}</td><td>${s.performed_by||' - '}</td><td style="color:#666;font-size:11px">${s.notes||''}</td></tr>`).join('')}</tbody></table>`}
     <div class="footer">🐔 Chicken Zone Inventory Manager · ${new Date().toLocaleDateString()}</div>
   </body></html>`);
-  setTimeout(()=>w.print(),400);
+  // Manual print via button
 }
 
 // ─── WISHLIST ─────────────────────────────────────────────────────────────────
@@ -3323,7 +3848,7 @@ async function renderWishlist(){
     return pa - pb;
   });
 
-  let html='<div class="page-header"><div style="text-align:center;flex:1"><div class="page-title" style="font-size:42px;text-align:center">Wishlist</div><div class="page-subtitle" style="font-size:12px;text-align:center">Find, Buy, Succeed!</div></div><button class="btn btn-primary" onclick="showWishlistModal()">+ Add Item</button></div>';
+  let html='<div class="page-header"><div><div class="page-title">Wishlist</div><div class="page-subtitle">Find, Buy, Succeed!</div></div><button class="btn btn-primary" onclick="showWishlistModal()">+ Add Item</button></div>';
 
   if(!items || items.length===0){
     html+='<div class="empty-state"><div class="empty-icon">⭐</div><p>Wishlist is empty</p></div>';

@@ -44,7 +44,7 @@ textarea.form-control{resize:vertical;min-height:80px}
 .sidebar-brand{padding:22px 16px 18px;border-bottom:1px solid var(--border);text-align:center}
 .sidebar-brand .brand-name{font-family:'Bebas Neue',sans-serif;font-size:28px;color:var(--accent);letter-spacing:2px;line-height:1;text-align:center}
 .sidebar-brand .brand-name .chicken{font-size:36px;vertical-align:middle;margin-right:4px}
-.sidebar-brand .brand-sub{font-family:'Barlow Condensed',sans-serif;font-size:11px;color:var(--ku-blue);letter-spacing:3px;text-transform:uppercase;margin-top:4px;text-align:center;font-weight:600}
+.sidebar-brand .brand-sub{font-family:'Barlow Condensed',sans-serif;font-size:11px;color:#ffffff;letter-spacing:3px;text-transform:uppercase;margin-top:4px;text-align:center;font-weight:600}
 .sidebar-nav{flex:1;padding:12px 0}
 .nav-label{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text-dim);padding:12px 20px 6px}
 .nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;color:var(--text-muted);font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;transition:all .15s;border-left:3px solid transparent}
@@ -222,3 +222,7 @@ tr:hover td{background:rgba(255,255,255,.025)}
 .spinner-label{font-family:'Barlow Condensed',sans-serif;font-size:14px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);animation:fade-pulse 1.5s ease-in-out infinite}
 @keyframes fade-pulse{0%,100%{opacity:.4}50%{opacity:1}}
 .view-loading{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:80px 20px;color:var(--text-muted)}
+
+/* White calendar icon on date inputs */
+input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1) brightness(2);cursor:pointer;opacity:0.9}
+input[type="date"]::-webkit-calendar-picker-indicator:hover{opacity:1}
