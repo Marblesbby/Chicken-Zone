@@ -82,7 +82,10 @@ function val(id){
 }
 function fmtDate(d){
   if(!d) return '-';
-  var dt = new Date(d + 'T12:00:00');
+  // Handle both date strings (2024-01-15) and full ISO timestamps
+  var dateStr = d.includes('T') ? d.split('T')[0] : d;
+  var dt = new Date(dateStr + 'T12:00:00');
+  if(isNaN(dt.getTime())) return '-';
   return dt.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
 }
 
@@ -93,9 +96,27 @@ function toast(msg, type){
   if(!c) return;
   var t = document.createElement('div');
   t.className = 'toast toast-' + type;
-  t.textContent = msg;
-  c.appendChild(t);
-  setTimeout(function(){ t.remove(); }, 3800);
+  t.style.display = 'flex';
+  t.style.alignItems = 'center';
+  t.style.gap = '8px';
+  t.style.paddingRight = '8px';
+  var span = document.createElement('span');
+  span.textContent = msg;
+  span.style.flex = '1';
+  t.appendChild(span);
+  // Error toasts get an X to dismiss manually; others auto-dismiss
+  if(type === 'error'){
+    var x = document.createElement('button');
+    x.textContent = '×';
+    x.style.cssText = 'background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0;line-height:1;opacity:.7;flex-shrink:0';
+    x.onclick = function(){ t.remove(); };
+    t.appendChild(x);
+    // Error toasts don't auto-dismiss
+    c.appendChild(t);
+  } else {
+    c.appendChild(t);
+    setTimeout(function(){ t.remove(); }, 3800);
+  }
 }
 
 // ─── MODAL ───────────────────────────────────────────────────────────────────────────────────
@@ -172,7 +193,7 @@ function errBox(msg, techDetail){
       '<div style="color:var(--text-muted);margin-bottom:8px">This is a normal hosting-side delay on first load and not a real error.</div>' +
       '<div style="color:var(--text-muted);margin-bottom:14px">Please press <strong>Retry</strong> to continue. If that does not work, try clicking another tab in the sidebar and coming back. If neither works after a few tries, then submit a bug report.</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-      '<button class="btn btn-primary btn-sm" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
+      '<button style="padding:6px 16px;background:#1a1a2e;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
       reportBtn +
       '</div></div></div>';
   }
@@ -181,7 +202,7 @@ function errBox(msg, techDetail){
     '<strong style="font-size:16px;display:block;margin-bottom:8px">&#x26A0;&#xFE0F; Something went wrong</strong>' +
     esc(msg) +
     '<div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">' +
-    '<button class="btn btn-secondary btn-sm" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
+    '<button style="padding:6px 16px;background:#1a1a2e;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" onclick="retryCurrentView()">&#x1F504; Retry</button>' +
     reportBtn +
     '</div></div></div>';
 }
@@ -622,6 +643,15 @@ async function showView(view, arg){
     window.location.hash = newHash;
     setTimeout(function(){ _navigating = false; }, 100);
   }
+  // Apply viewer-mode class to disable action buttons for viewers
+  var appEl2 = document.getElementById('app');
+  if(appEl2){
+    if(getEffectiveRole()==='viewer'){
+      appEl2.classList.add('viewer-mode');
+    } else {
+      appEl2.classList.remove('viewer-mode');
+    }
+  }
   // Highlight correct nav item
   var navView = view === 'part-profile' ? 'parts' : view === 'vehicle-profile' ? 'vehicles' : view;
   document.querySelectorAll('.nav-item').forEach(function(n){
@@ -684,7 +714,8 @@ async function renderUserProfile(){
   var uname = p.username || (currentUser.user_metadata && currentUser.user_metadata.username) || '';
   var ucolor = p.user_color || '#FFD700';
   var dname = p.display_name || uname;
-  var role = p.role || 'owner';
+  // Use effective role for display (respects View-As mode)
+  var role = (_viewAsRole && _isAdmin) ? _viewAsRole : (p.role || 'owner');
   var resetReq = p.reset_requested;
 
   var html = '<div class="page-header"><div style="text-align:center;flex:1">';
@@ -1126,10 +1157,30 @@ async function renderFeedbackPage(){
     // ── MY SUBMISSIONS / ALL SUBMISSIONS (admin only) ────────────────
     var displayList = _isAdmin ? allFeedback : myFeedback;
     if(displayList.length > 0){
-      html += '<div class="stat-label" style="margin-bottom:14px">'+(_isAdmin?'All Submissions ('+allFeedback.length+')':'My Submissions')+'</div>';
-      displayList.forEach(function(f){
-        html += renderFeedbackEntry(f);
-      });
+      if(_isAdmin){
+        // Group by type with collapsible headers
+        var types = ['Bug Report','New Feature','Improvement','UI / Visual','Performance'];
+        types.forEach(function(t){
+          var group = displayList.filter(function(f){ return f.type === t; });
+          if(group.length === 0) return;
+          var typeIcon = t==='Bug Report'?'&#x1F41B;':t==='New Feature'?'&#x1F4A1;':t==='Improvement'?'&#x1F527;':t==='UI / Visual'?'&#x1F3A8;':'&#x26A1;';
+          var sectionId = 'fb-section-'+t.replace(/[^a-z]/gi,'');
+          html += '<div style="margin-bottom:20px">';
+          html += '<div class="stat-label" style="margin-bottom:10px;cursor:pointer;display:flex;align-items:center;gap:8px" onclick="toggleSection(\''+sectionId+'\')">'+typeIcon+' '+esc(t)+' ('+group.length+') <span style="font-size:12px">&#x25BC;</span></div>';
+          html += '<div id="'+sectionId+'">';
+          group.forEach(function(f){ html += renderFeedbackEntry(f); });
+          html += '</div></div>';
+        });
+        // Uncategorized
+        var other = displayList.filter(function(f){ return !types.includes(f.type); });
+        if(other.length > 0){
+          html += '<div class="stat-label" style="margin-bottom:10px">Other ('+other.length+')</div>';
+          other.forEach(function(f){ html += renderFeedbackEntry(f); });
+        }
+      } else {
+        html += '<div class="stat-label" style="margin-bottom:14px">My Submissions</div>';
+        displayList.forEach(function(f){ html += renderFeedbackEntry(f); });
+      }
     } else {
       html += '<div class="empty-state"><div class="empty-icon">&#x1F4AC;</div><p>No feedback submitted yet</p></div>';
     }
@@ -1171,199 +1222,114 @@ function renderKnownBug(b, isSquashed){
   return html;
 }
 
+
+// ─── ADMIN FEEDBACK UPDATE MODAL ────────────────────────────────────────────────────────────
+function showFeedbackUpdateModal(id){
+  var f = null;
+  // Find in current DOM data — fetch fresh
+  db.from('feedback').select('*').eq('id',id).single().then(function(res){
+    f = res.data;
+    if(!f){ toast('Could not load submission','error'); return; }
+    var statusOpts = ['new','in_progress','done','wont_fix'].map(function(s){
+      return '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';
+    }).join('');
+    showModal(
+      '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+      '<div class="modal" style="max-width:480px">' +
+      '<div class="modal-header"><div class="modal-title">Update Submission</div>' +
+      '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+      '<div class="modal-body">' +
+      '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Editing admin fields only — user input is preserved as submitted.</div>' +
+      '<div class="form-group"><label>Bug Title (public-facing)</label>' +
+      '<input type="text" class="form-control" id="fu-title" value="'+esc(f.title||f.type||'')+'"></div>' +
+      '<div class="form-group"><label>Status</label>' +
+      '<select class="form-control" id="fu-status">'+statusOpts+'</select></div>' +
+      '<div class="form-group"><label>Admin Note (visible to submitter)</label>' +
+      '<textarea class="form-control" id="fu-note" rows="3">'+esc(f.admin_note||'')+'</textarea></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="saveFeedbackUpdate(\''+id+'\')">Save Update</button>' +
+      '</div></div></div>'
+    );
+  });
+}
+
+async function saveFeedbackUpdate(id){
+  var title = val('fu-title');
+  var status = val('fu-status');
+  var note = val('fu-note');
+  var updates = {updated_at: new Date().toISOString()};
+  if(title) updates.title = title;
+  if(status) updates.status = status;
+  updates.admin_note = note || null;
+  var{error} = await db.from('feedback').update(updates).eq('id',id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Updated','success');
+  closeModal();
+  await renderFeedbackPage();
+}
+
+
 function renderFeedbackEntry(f){
   var statusColor = {new:'var(--accent)',in_progress:'var(--info)',done:'var(--success)',wont_fix:'var(--danger)'}[f.status]||'var(--text-muted)';
+  var statusLabel = {new:'New',in_progress:'In Progress',done:'Done',wont_fix:"Won't Fix"}[f.status]||f.status||'New';
   var typeIcon = f.type==='Bug Report'?'&#x1F41B;':f.type==='New Feature'?'&#x1F4A1;':f.type==='Improvement'?'&#x1F527;':f.type==='UI / Visual'?'&#x1F3A8;':'&#x26A1;';
+
+  // Calculate days since submitted
+  var daysSince = '';
+  if(f.created_at){
+    var diff = Math.floor((Date.now() - new Date(f.created_at)) / 86400000);
+    daysSince = diff === 0 ? 'Today' : diff === 1 ? '1 day ago' : diff + ' days ago';
+  }
+
   var html = '<div class="card" style="margin-bottom:10px">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+  // Header row: type + title + status badge
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
   html += '<div style="flex:1">';
-  if(_isAdmin) html += '<div style="font-size:11px;color:'+(f.user_color||'#FFD700')+';font-weight:600;margin-bottom:4px">'+esc(f.username||'Unknown')+'</div>';
-  html += '<div style="font-weight:600">'+typeIcon+' '+esc(f.type||'Feedback')+(f.location?' <span style="font-size:11px;color:var(--text-muted)">— '+esc(f.location)+'</span>':'')+'</div>';
-  if(f.title) html += '<div style="font-size:13px;margin-top:4px">'+esc(f.title)+'</div>';
-  if(f.description) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">'+esc(f.description)+'</div>';
-  if(_isAdmin && f.extra_fields){
+  html += '<div style="font-weight:700;font-size:14px">'+typeIcon+' '+esc(f.title||f.type||'Feedback');
+  if(f.location) html += ' <span style="font-size:11px;font-weight:400;color:var(--text-muted)">— '+esc(f.location)+'</span>';
+  html += '</div>';
+  // Submitter + date info
+  html += '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">';
+  if(_isAdmin && f.username) html += '<span style="color:'+(f.user_color||'#FFD700')+';font-weight:600">'+esc(f.username)+'</span> · ';
+  html += fmtDate(f.created_at)+' · '+daysSince;
+  html += '</div>';
+  html += '</div>';
+  html += '<span style="font-size:11px;color:'+statusColor+';font-weight:700;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">'+statusLabel+'</span>';
+  html += '</div>';
+
+  // User-submitted details
+  if(f.description) html += '<div style="font-size:13px;color:var(--text);margin-bottom:6px">'+esc(f.description)+'</div>';
+  if(f.extra_fields){
     try{
-      var extra = JSON.parse(f.extra_fields);
-      Object.keys(extra).forEach(function(k){
-        if(extra[k]) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px"><strong>'+esc(k)+':</strong> '+esc(extra[k])+'</div>';
-      });
+      var ex = JSON.parse(f.extra_fields);
+      var exHtml = Object.keys(ex).filter(function(k){return ex[k];}).map(function(k){
+        return '<span style="font-size:11px;color:var(--text-muted)"><strong>'+esc(k)+':</strong> '+esc(ex[k])+'</span>';
+      }).join(' &nbsp;·&nbsp; ');
+      if(exHtml) html += '<div style="margin-bottom:6px">'+exHtml+'</div>';
     }catch(e){}
   }
-  if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px;background:rgba(255,215,0,.06);border-radius:4px">Admin: '+esc(f.admin_note)+'</div>';
+
+  // Admin note
+  if(f.admin_note) html += '<div style="font-size:12px;color:var(--accent);margin-top:6px;padding:6px 10px;background:rgba(255,215,0,.08);border-radius:6px;border-left:3px solid var(--accent)"><strong>Admin:</strong> '+esc(f.admin_note)+'</div>';
   if(f.is_published) html += '<div style="font-size:11px;color:var(--warning);margin-top:4px">&#x1F4E2; Published as known bug</div>';
-  html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(f.created_at)+'</div>';
-  html += '</div>';
-  html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">';
-  html += '<span style="font-size:11px;color:'+statusColor+';text-transform:uppercase;font-weight:600;letter-spacing:1px">'+(f.status||'new').replace('_',' ')+'</span>';
+
+  // Admin action bar
   if(_isAdmin){
-    html += '<select class="form-control" style="width:auto;font-size:11px" onchange="setFeedbackStatus(\''+f.id+'\',this.value)">';
-    ['new','in_progress','done','wont_fix'].forEach(function(s){
-      html += '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';
-    });
-    html += '</select>';
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
+    html += '<button class="btn btn-secondary btn-sm" onclick="showFeedbackUpdateModal(\''+f.id+'\')">&#x270F;&#xFE0F; Update</button>';
     if(f.type==='Bug Report' && !f.is_published){
-      html += '<button class="btn btn-secondary btn-sm" onclick="publishKnownBug(\''+f.id+'\')">&#x1F4E2; Publish</button>';
+      html += '<button class="btn btn-ghost btn-sm" onclick="publishKnownBug(\''+f.id+'\')">&#x1F4E2; Publish Bug</button>';
     }
-    html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">&#x1F4DD; Note</button>';
     html += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
+    html += '</div>';
   }
-  html += '</div></div></div>';
+
+  html += '</div>';
   return html;
 }
 
-// ─── KNOWN BUG ADMIN ACTIONS ──────────────────────────────────────────────────────────────────
-
-async function addKnownBugManually(){
-  var title = prompt('Bug title:');
-  if(!title || !title.trim()) return;
-  var location = prompt('Location (which page?):') || '';
-  var desc = prompt('Description (optional):') || '';
-  var uname = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'Admin';
-  var{error} = await db.from('feedback').insert({
-    user_id: currentUser.id,
-    username: uname,
-    user_color: (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700',
-    type: 'Bug Report',
-    title: title.trim(),
-    location: location || null,
-    description: desc || null,
-    status: 'new',
-    is_published: true
-  });
-  if(error){ toast(error.message,'error'); return; }
-  toast('Known bug added','success');
-  await renderFeedbackPage();
-}
-
-async function publishKnownBug(id){
-  // Get the bug to check if it has a title
-  var bRes = await db.from('feedback').select('title,description').eq('id',id).single();
-  var existingTitle = (bRes.data && bRes.data.title) || '';
-  var defaultTitle = existingTitle || ((bRes.data && bRes.data.description||'').substring(0,60));
-  var title = prompt('Bug title (shown to all users in Known Bugs):', defaultTitle);
-  if(title === null) return;
-  if(!title.trim()){ toast('Title cannot be empty','error'); return; }
-  await db.from('feedback').update({
-    is_published:true,
-    title:title.trim(),
-    updated_at:new Date().toISOString()
-  }).eq('id',id);
-  toast('Published as known bug','success');
-  await renderFeedbackPage();
-}
-
-async function unpublishKnownBug(id){
-  if(!confirm('Remove from Known Bugs?')) return;
-  await db.from('feedback').update({is_published:false}).eq('id',id);
-  toast('Unpublished','success');
-  await renderFeedbackPage();
-}
-
-async function editKnownBug(id){
-  var newTitle = prompt('Edit bug title:');
-  if(newTitle===null) return;
-  await db.from('feedback').update({title:newTitle.trim()}).eq('id',id);
-  toast('Updated','success');
-  await renderFeedbackPage();
-}
-
-async function resolveKnownBug(id){
-  var msg = prompt('Resolution message (will appear on user dashboards):');
-  if(msg===null || !msg.trim()) return;
-  await db.from('feedback').update({
-    is_resolved:true,
-    resolution_message:msg.trim(),
-    status:'done',
-    resolved_at:new Date().toISOString()
-  }).eq('id',id);
-  toast('Marked as resolved — users will see notification on dashboard','success');
-  await renderFeedbackPage();
-}
-
-
-function updateFeedbackForm(){
-  var type = val('fb-type');
-  var container = document.getElementById('fb-dynamic-fields');
-  if(!container) return;
-  var html = '';
-  if(type === 'Bug Report'){
-    html += '<div class="form-group"><label>Severity</label><select class="form-control" id="fb-severity"><option value="minor">Minor Annoyance</option><option value="broke">Broke Something</option><option value="blocked">Can&#39;t Use App</option></select></div>';
-    html += '<div class="form-group"><label>What were you doing?</label><textarea class="form-control" id="fb-doing" rows="2" placeholder="Describe what you were doing when it happened..."></textarea></div>';
-    html += '<div class="form-group"><label>What did you expect to happen?</label><textarea class="form-control" id="fb-expected" rows="2" placeholder="What should have happened?"></textarea></div>';
-    html += '<div class="form-group"><label>What actually happened?</label><textarea class="form-control" id="fb-actual" rows="2" placeholder="What went wrong?"></textarea></div>';
-  } else if(type === 'New Feature'){
-    html += '<div class="form-group"><label>Describe the feature</label><textarea class="form-control" id="fb-title" rows="2" placeholder="What would you like to be able to do?"></textarea></div>';
-    html += '<div class="form-group"><label>Why would it be useful?</label><textarea class="form-control" id="fb-description" rows="2" placeholder="How would this help you?"></textarea></div>';
-  } else if(type === 'Improvement'){
-    html += '<div class="form-group"><label>What currently happens?</label><textarea class="form-control" id="fb-doing" rows="2" placeholder="Describe the current behavior..."></textarea></div>';
-    html += '<div class="form-group"><label>What would be better?</label><textarea class="form-control" id="fb-title" rows="2" placeholder="How should it work instead?"></textarea></div>';
-  } else if(type === 'UI / Visual'){
-    html += '<div class="form-group"><label>What looks wrong or could look better?</label><textarea class="form-control" id="fb-title" rows="3" placeholder="Describe the visual issue or suggestion..."></textarea></div>';
-  } else if(type === 'Performance'){
-    html += '<div class="form-group"><label>What is slow or unresponsive?</label><textarea class="form-control" id="fb-title" rows="3" placeholder="What takes too long or feels laggy?"></textarea></div>';
-  }
-  container.innerHTML = html;
-}
-
-// ─── SUBMIT FEEDBACK ─────────────────────────────────────────────────────────────────────────
-async function submitFeedback(){
-  var type     = val('fb-type');
-  var location = val('fb-location');
-  if(!type) return toast('Please select a feedback type', 'error');
-  var uname  = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'Unknown';
-  var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
-  // Gather fields based on type
-  var title = val('fb-title') || val('fb-doing') || '';
-  var description = val('fb-description') || val('fb-expected') || '';
-  if(!description && !title && !(document.getElementById('fb-doing')&&document.getElementById('fb-doing').value.trim())) return toast('Please fill in the details', 'error');
-  // Build extra structured fields
-  var extra = {};
-  if(type === 'Bug Report'){
-    extra['Severity']  = val('fb-severity');
-    extra['Doing']     = val('fb-doing');
-    extra['Expected']  = val('fb-expected');
-    extra['Actual']    = val('fb-actual');
-  }
-  var{error} = await db.from('feedback').insert({
-    user_id:currentUser.id, username:uname, user_color:ucolor,
-    type:type, location:location, title:title, description:description,
-    extra_fields: Object.keys(extra).length ? JSON.stringify(extra) : null,
-    status:'new'
-  });
-  if(error){ toast(error.message,'error'); return; }
-  toast('Feedback submitted! Thank you.', 'success');
-  await renderFeedbackPage();
-}
-
-// ─── OPEN BUG REPORT PRE-FILLED (called from error box) ──────────────────────────────────────
-
-async function openBugReportFromError(){
-  var info = window._lastErrorForBug || {msg:'', view:'dashboard'};
-  await openBugReport(info.msg, info.view);
-}
-
-async function openBugReport(errorMsg, currentPage){
-  await showView('feedback');
-  setTimeout(function(){
-    var typeEl = document.getElementById('fb-type');
-    var locEl  = document.getElementById('fb-location');
-    if(typeEl){ typeEl.value = 'Bug Report'; updateFeedbackForm(); }
-    if(locEl && currentPage){
-      // Map view names to location dropdown values
-      var map = {
-        dashboard:'Dashboard', parts:'Auto Parts', 'part-profile':'Part Profile',
-        vehicles:'Vehicles', 'vehicle-profile':'Vehicle Profile', wishlist:'Wishlist',
-        feedback:'Feedback', profile:'My Profile'
-      };
-      locEl.value = map[currentPage] || 'General / Other';
-    }
-    // Pre-fill actual field with error
-    setTimeout(function(){
-      var actualEl = document.getElementById('fb-actual');
-      if(actualEl) actualEl.value = 'Automatic error: ' + (errorMsg||'');
-    }, 100);
-  }, 200);
-}
 
 async function setFeedbackStatus(id, status){
   await db.from('feedback').update({status:status, updated_at:new Date().toISOString()}).eq('id',id);
@@ -1840,13 +1806,17 @@ function renderPartsList(el){
 
   const total=combined.length, inStock=combined.filter(p=>p._qty>0).length;
 
-  el.innerHTML=`
+  var _viewerBannerParts = maybeShowTesterBanner();
+  el.innerHTML=_viewerBannerParts+`
     <div class="page-header"><div><div class="page-title">Auto Parts</div><div class="page-subtitle">${inStock} of ${total} parts in stock</div></div>
       <button class="btn btn-primary" onclick="showAddPartChoice()">+ Add New Part to Inventory</button>
     </div>
     <div class="table-wrap">
       <div class="table-toolbar">
-        <input type="text" class="search-input" id="parts-search" placeholder="🔍  Search name, category, part number..." value="${esc(partSearch)}" oninput="onPartsSearch(this.value)">
+        <div style="position:relative;display:flex;align-items:center;flex:1">
+        <input type="text" class="search-input" id="parts-search" style="flex:1;padding-right:32px" placeholder="🔍  Search name, category, part number..." value="${esc(partSearch)}" oninput="onPartsSearch(this.value)">
+        <button onclick="document.getElementById('parts-search').value='';partSearch='';renderPartsList();" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--danger);font-size:16px;cursor:pointer;line-height:1;padding:0" title="Clear search">&#x2715;</button>
+        </div>
         <div class="flex-row" style="gap:4px">
           <button class="sort-btn ${partsQtyFilter==='all'?'active':''}" onclick="setPartsQtyFilter('all')">All</button>
           <button class="sort-btn ${partsQtyFilter==='instock'?'active':''}" onclick="setPartsQtyFilter('instock')">In Stock</button>
@@ -1867,7 +1837,7 @@ function renderPartsList(el){
           ${combined.map(p=>{
             const qty=p._qty;
             const isZero=qty===0;
-            const topInv=p._inv[0];
+            const topInv=p._inv.find(function(i){ return !i.is_historical && i.quantity>0; })||p._inv.find(function(i){ return !i.is_historical; })||null;
             const cond=topInv?.condition||'';
             const loc=topInv?.shelf_location||'';
             const failRank=p.rank<999?p.rank:'';
@@ -1950,8 +1920,9 @@ async function renderPartProfile(arg){
     return;
   }
 
-  const totalQty = inv.reduce((sum,p)=>sum+p.quantity, 0);
-  const topInv = inv[0];
+  const realInv = inv.filter(function(p){ return !p.is_historical; });
+  const totalQty = realInv.reduce((sum,p)=>sum+p.quantity, 0);
+  const topInv = inv.find(function(i){ return !i.is_historical && i.quantity>0; }) || inv.find(function(i){ return !i.is_historical; }) || null;
 
   // Fetch installation history
   let installs=[];
@@ -2293,6 +2264,10 @@ function showCatalogEditModal(cpId){
     <div class="modal-header"><div class="modal-title">✏️ Edit Part Info</div><button class="close-btn" onclick="closeModal()">×</button></div>
     <div class="modal-body">
       <div class="alert alert-warning" style="margin-bottom:16px">⚠️ This is a <strong>universal change</strong>  -  updates this part type for all vehicles and all users.</div>
+      <div class="grid-2">
+        <div class="form-group"><label>Category</label><select class="form-control" id="ce-cat">${getCategories().map(c=>`<option value="${esc(c)}" ${cp.cat===c?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new__">+ New Category...</option></select></div>
+        <div class="form-group"><label>Part Name</label><input class="form-control" id="ce-partname" value="${esc(cp.name||'')}"></div>
+      </div>
       <div class="form-group"><label>Description</label><textarea class="form-control" id="ce-desc" rows="2">${esc(cp.desc||'')}</textarea></div>
       <div class="grid-2">
         <div class="form-group"><label>OEM Part Number</label><input class="form-control" id="ce-oem" value="${esc(cp.oem||'')}"></div>
@@ -2314,6 +2289,22 @@ async function saveCatalogEdit(cpId){
   cp.desc=document.getElementById('ce-desc').value.trim();
   cp.oem=document.getElementById('ce-oem').value.trim();
   cp.afm=document.getElementById('ce-afm').value.trim();
+  // Handle category change (new category text or existing)
+  var catSel=document.getElementById('ce-cat');
+  if(catSel){
+    var newCat=catSel.value;
+    if(newCat==='__new__'){
+      var customCat=prompt('Enter new category name:');
+      if(customCat&&customCat.trim()) newCat=customCat.trim();
+      else newCat=cp.cat; // cancelled — keep original
+    }
+    if(newCat) cp.cat=newCat;
+  }
+  var newName=document.getElementById('ce-partname')&&document.getElementById('ce-partname').value.trim();
+  if(newName) cp.name=newName;
+  // Persist to Supabase
+  await db.from('catalog_parts').update({category:cp.cat,name:cp.name,description:cp.desc,oem_number:cp.oem,aftermarket_ref:cp.afm}).eq('id',cpId);
+  invalidateCatalog();
   const tools=document.getElementById('ce-tools').value.split('\n').map(t=>t.trim()).filter(Boolean);
   const hardware=document.getElementById('ce-hardware').value.split('\n').map(h=>h.trim()).filter(Boolean);
   _partDetails[cpId]={tools:tools,hardware:hardware,time:document.getElementById('ce-time').value.trim(),tip:document.getElementById('ce-tip').value.trim()};
@@ -2859,6 +2850,7 @@ async function renderVehicles(){
   }
 
   let html='';
+  html = maybeShowTesterBanner() + html;
   html+='<div class="page-header"><div><div class="page-title">Vehicles</div><div class="page-subtitle">Car Profiles</div></div>';
   html+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
   html+='<button class="btn btn-primary" onclick="showVehicleModal()">+ New Vehicle</button>';
@@ -3046,6 +3038,17 @@ function setVehicleTab(tab){
   renderVehicleProfile({id: _currentVehicleProfile.id});
 }
 
+
+
+function toggleSection(id){
+  var el = document.getElementById(id);
+  if(!el) return;
+  var isHidden = el.style.display === 'none';
+  el.style.display = isHidden ? '' : 'none';
+  var arrowId = id.replace('-section','-arrow');
+  var arrow = document.getElementById(arrowId);
+  if(arrow) arrow.innerHTML = isHidden ? '&#x25BC;' : '&#x25B6;';
+}
 
 function filterReminders(query){
   // Simple client-side filter of visible reminders
@@ -3635,6 +3638,47 @@ function renderServiceList(services){
   return html;
 }
 
+
+// ─── PART PROFILE POPUP (read-only overlay) ───────────────────────────────────────────────
+async function showPartProfilePopup(catalogId){
+  if(!catalogId){ toast('No catalog info for this part','info'); return; }
+  var cp = _catalog.find(function(p){ return p.id === catalogId; });
+  if(!cp){ toast('Part not found in catalog','error'); return; }
+  var pd = getPartDetail(catalogId) || {};
+
+  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:560px;max-height:80vh;overflow-y:auto">' +
+    '<div class="modal-header" style="position:sticky;top:0;background:var(--surface);z-index:1">' +
+    '<div class="modal-title">'+esc(cp.name)+'</div>' +
+    '<button class="close-btn" onclick="closeModal()">&times;</button>' +
+    '</div>' +
+    '<div class="modal-body">' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">'+esc(cp.cat)+(cp.sub?' · '+esc(cp.sub):'')+'</div>';
+
+  if(cp.desc) html += '<div style="margin-bottom:12px;font-size:13px;color:var(--text-muted)">'+esc(cp.desc)+'</div>';
+
+  // Part numbers
+  if(cp.oem || cp.afm){
+    html += '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">';
+    if(cp.oem) html += '<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)">OEM</div><div style="font-family:Barlow Condensed,sans-serif;font-size:15px">'+esc(cp.oem)+'</div></div>';
+    if(cp.afm) html += '<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)">Aftermarket Ref</div><div style="font-size:13px;color:var(--text-muted)">'+esc(cp.afm)+'</div></div>';
+    html += '</div>';
+  }
+
+  // What you need
+  if(pd.time) html += '<div style="margin-bottom:8px"><span style="font-size:11px;text-transform:uppercase;color:var(--text-dim)">Swap Time</span> <strong>'+esc(pd.time)+'</strong></div>';
+  if(pd.tools && pd.tools.length){ html += '<div style="margin-bottom:8px"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:4px">Tools</div><div style="font-size:13px">'+pd.tools.map(function(t){return esc(t);}).join(', ')+'</div></div>'; }
+  if(pd.hardware && pd.hardware.length){ html += '<div style="margin-bottom:8px"><div style="font-size:11px;text-transform:uppercase;color:var(--text-dim);margin-bottom:4px">Also Buy</div><div style="font-size:13px">'+pd.hardware.map(function(h){return esc(h);}).join(', ')+'</div></div>'; }
+  if(pd.tip) html += '<div style="margin-top:8px;padding:8px;background:var(--accent-dim);border-radius:6px;font-size:12px"><strong>Pro Tip:</strong> '+esc(pd.tip)+'</div>';
+
+  html += '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:flex-end">' +
+    '<button class="btn btn-secondary" onclick="showView(\'part-profile\',{id:\''+catalogId+'\',type:\'catalog\'});closeModal()">Open Full Page ↗</button>' +
+    '</div>';
+
+  html += '</div></div></div>';
+  showModal(html);
+}
+
 function renderPartsTab(installs, vehicleId){
   var active=(installs||[]).filter(function(i){return !i.removed_date;});
   var removed=(installs||[]).filter(function(i){return !!i.removed_date;});
@@ -3780,7 +3824,7 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
     c += '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div style="flex:1">';
     c += '<div style="font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
     c += esc(r.title);
-    c += '<span title="'+esc(freqText)+'" style="cursor:help;color:var(--text-muted);font-size:13px">&#9432;</span>';
+    c += '<span title="'+esc(freqText)+'" style="cursor:help;color:var(--text-muted);font-size:11px;border-bottom:1px dotted var(--text-muted);margin-left:2px">freq</span>';
     c += ' '+sb+'</div>';
     if(r.description) c += '<div style="font-size:12px;color:var(--ku-blue);margin-top:4px">'+esc(r.description)+'</div>';
 
@@ -3788,7 +3832,7 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
     var daysUntilLine = '';
     if(r.next_due_date){
       var diff = Math.ceil((new Date(r.next_due_date) - today) / 86400000);
-      var color = diff < 0 ? 'var(--danger)' : (diff < 14 ? 'var(--warning)' : 'var(--text-muted)');
+      var color = diff < 0 ? '#cc2200' : (diff < 14 ? 'var(--warning)' : 'var(--text-muted)');
       daysUntilLine = '<span style="color:'+color+';font-weight:600">Days Until: '+diff+'</span> <span style="color:var(--text-muted)">('+fmtDate(r.next_due_date)+')</span>';
     } else if(r.next_due_mileage){
       var mDiff = r.next_due_mileage - (vehicle.current_mileage || 0);
@@ -3796,7 +3840,7 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
       daysUntilLine = '<span style="color:'+mColor+';font-weight:600">Miles Until: '+mDiff.toLocaleString()+'</span>';
     }
     if(r.last_done_date){
-      daysUntilLine += (daysUntilLine?' &middot; ':'')+'<span style="color:var(--text-muted)">Last done: '+fmtDate(r.last_done_date)+'</span>';
+      daysUntilLine += (daysUntilLine?' &middot; ':'')+'<span style="color:#5b8dd9">Last done: '+fmtDate(r.last_done_date)+'</span>';
     }
     if(daysUntilLine) c += '<div style="font-size:12px;margin-top:6px">'+daysUntilLine+'</div>';
 
@@ -3811,29 +3855,34 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
 
   // Routine section
   html += '<div style="margin-bottom:24px">';
-  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--accent)">&#x1F504; Routine ('+routine.length+')</div>';
+  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--accent);cursor:pointer;user-select:none" onclick="toggleSection(\'routine-section\')" title="Click to collapse/expand">&#x1F504; Routine ('+routine.length+') <span id="routine-arrow" style="font-size:12px">&#x25BC;</span></div>';
+  html += '<div id="routine-section">';
   if(routine.length === 0){
     html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No routine maintenance set up</div>';
   } else {
     routine.forEach(function(r){ html += renderReminderCard(r); });
   }
-  html += '</div>';
+  html += '</div></div>';
 
   // Planned section
   html += '<div>';
-  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--info)">&#x1F4CC; Planned / Follow-ups ('+planned.length+')</div>';
+  html += '<div class="stat-label" style="margin-bottom:10px;color:var(--info);cursor:pointer;user-select:none" onclick="toggleSection(\'planned-section\')" title="Click to collapse/expand">&#x1F4CC; Planned / Follow-ups ('+planned.length+') <span id="planned-arrow" style="font-size:12px">&#x25BC;</span></div>';
+  html += '<div id="planned-section">';
   if(planned.length === 0){
     html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No follow-ups planned</div>';
   } else {
     planned.forEach(function(r){ html += renderReminderCard(r); });
   }
-  html += '</div>';
+  html += '</div></div>';
 
   return html;
 }
 
 
 async function printVehicleProfile(vehicleId){
+  // Prevent hashchange from navigating away while print tab is open
+  _navigating = true;
+  setTimeout(function(){ _navigating = false; }, 2000);
   var{data:v} = await db.from('vehicles').select('*').eq('id',vehicleId).single();
   var[{data:services},{data:installs}] = await Promise.all([
     db.from('service_history').select('*').eq('vehicle_id',vehicleId).order('performed_date',{ascending:false}),
@@ -3919,7 +3968,7 @@ async function renderWishlist(){
     return pa - pb;
   });
 
-  let html='<div class="page-header"><div><div class="page-title">Wishlist</div><div class="page-subtitle">Find, Buy, Succeed!</div></div><button class="btn btn-primary" onclick="showWishlistModal()">+ Add Item</button></div>';
+  let html=maybeShowTesterBanner()+'<div class="page-header"><div><div class="page-title">Wishlist</div><div class="page-subtitle">Find, Buy, Succeed!</div></div><button class="btn btn-primary" onclick="showWishlistModal()">+ Add Item</button></div>';
 
   if(!items || items.length===0){
     html+='<div class="empty-state"><div class="empty-icon">⭐</div><p>Wishlist is empty</p></div>';
@@ -3986,6 +4035,34 @@ async function renderWishlist(){
 
 
 // ─── WISHLIST MODAL ──────────────────────────────────────────────────────────
+
+function updateWishlistPartList(){
+  var cat = document.getElementById('w-cat') ? document.getElementById('w-cat').value : '';
+  var sel = document.getElementById('w-name');
+  if(!sel) return;
+  if(!cat){
+    sel.innerHTML = '<option value="">Select a category first...</option>';
+    return;
+  }
+  var parts = _catalog.filter(function(p){ return p.cat === cat; });
+  var opts = '<option value="">Select part...</option>';
+  parts.forEach(function(p){
+    opts += '<option value="'+esc(p.name)+'" data-oem="'+esc(p.oem)+'">'+esc(p.name)+'</option>';
+  });
+  sel.innerHTML = opts;
+  document.getElementById('w-num').value = '';
+}
+
+function updateWishlistOEM(){
+  var sel = document.getElementById('w-name');
+  var numEl = document.getElementById('w-num');
+  if(!sel || !numEl) return;
+  var opt = sel.options[sel.selectedIndex];
+  if(opt && opt.dataset && opt.dataset.oem){
+    numEl.value = opt.dataset.oem;
+  }
+}
+
 async function showWishlistModal(id){
   let item=null;
   if(id){
@@ -3993,21 +4070,43 @@ async function showWishlistModal(id){
     item=data;
   }
 
-  // Build suggestions from GMT800 catalog + custom parts in dbInventory
-  const catalogNames = _catalog.map(function(p){return p.name;});
-  const customNames = (dbInventory||[]).map(function(p){return p.name;}).filter(function(n){return n && !catalogNames.includes(n);});
-  const allNames = catalogNames.concat(customNames);
+  // Build category options
+  var cats = getCategories();
+  var catOpts = '<option value="">Select a category...</option>';
+  cats.forEach(function(c){ catOpts += '<option value="'+esc(c)+'"'+(item && item._cat===c?' selected':'')+'>'+esc(c)+'</option>'; });
+
+  // If editing, find which category the item belongs to
+  var itemCat = '';
+  if(item && item.name){
+    var matchPart = _catalog.find(function(p){ return p.name === item.name; });
+    if(matchPart) itemCat = matchPart.cat;
+  }
+
+  // Build initial part name options based on category (or all if editing)
+  var partOpts = '<option value="">Select a category first...</option>';
+  if(itemCat){
+    partOpts = '<option value="">Select part...</option>';
+    _catalog.filter(function(p){ return p.cat === itemCat; }).forEach(function(p){
+      partOpts += '<option value="'+esc(p.name)+'" data-oem="'+esc(p.oem)+'"'+(item && item.name===p.name?' selected':'')+'>'+esc(p.name)+'</option>';
+    });
+  }
 
   let html='<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:500px">';
   html+='<div class="modal-header"><div class="modal-title">'+(item?'Edit Wishlist Item':'Add to Wishlist')+'</div><button class="close-btn" onclick="closeModal()">×</button></div>';
   html+='<div class="modal-body">';
 
-  // Part name with autocomplete
+  // Part Type dropdown first
+  html+='<div class="form-group"><label>Part Type *</label>';
+  html+='<select class="form-control" id="w-cat" onchange="updateWishlistPartList()">';
+  html+=catOpts+'</select></div>';
+
+  // Part Name dropdown (filtered by type)
   html+='<div class="form-group"><label>Part Name *</label>';
-  html+='<input type="text" class="form-control" id="w-name" value="'+esc(item?.name||'')+'" list="w-name-list" oninput="onWishlistNameInput(this.value)" autocomplete="off">';
-  html+='<datalist id="w-name-list">';
-  allNames.forEach(function(n){ html+='<option value="'+esc(n)+'">'; });
-  html+='</datalist></div>';
+  html+='<select class="form-control" id="w-name" onchange="updateWishlistOEM()">';
+  html+=partOpts+'</select></div>';
+
+  // Set initial category value for editing
+  if(itemCat) html+='<script>document.getElementById("w-cat").value="'+esc(itemCat)+'";</scr'+'ipt>';
 
   // Part number (will auto-populate when catalog name picked)
   html+='<div class="grid-2">';
@@ -4056,7 +4155,8 @@ function onWishlistNameInput(name){
 
 // ─── SAVE WISHLIST ITEM ──────────────────────────────────────────────────────
 async function saveWishlistItem(id){
-  const name = val('w-name');
+  var nameEl = document.getElementById('w-name');
+  const name = nameEl ? (nameEl.tagName === 'SELECT' ? (nameEl.options[nameEl.selectedIndex] ? nameEl.options[nameEl.selectedIndex].value : '') : nameEl.value.trim()) : '';
   if(!name) return toast('Part name required','error');
   const priority = val('w-prio');
   if(!priority) return toast('Please pick a priority','error');

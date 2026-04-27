@@ -226,3 +226,14 @@ tr:hover td{background:rgba(255,255,255,.025)}
 /* White calendar icon on date inputs */
 input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1) brightness(2);cursor:pointer;opacity:0.9}
 input[type="date"]::-webkit-calendar-picker-indicator:hover{opacity:1}
+
+/* ── VIEWER MODE — grey out action buttons, keep nav/feedback/profile ── */
+.viewer-mode .btn-primary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *),
+.viewer-mode .btn-secondary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *) {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+/* Keep sidebar nav, feedback, profile fully clickable */
+.viewer-mode .nav-item { opacity: 1 !important; pointer-events: auto !important; }
+.viewer-mode .auth-tab { opacity: 1 !important; pointer-events: auto !important; }
