@@ -271,6 +271,8 @@ async function renderPartProfile(arg){
   html += '</div>'; // end right
   html += '</div>'; // end grid
 
+  if(String(el.dataset.renderToken) !== String(myToken)) return;
+  el.innerHTML = html;
   renderComments('part', id, 'comments-part-'+id);
 }
 
