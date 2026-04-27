@@ -417,8 +417,13 @@ function getEffectiveAdmin(){
 
 async function setViewAs(role){
   _viewAsRole = role === 'actual' ? null : role;
+  // Admin nav (which contains the View-As dropdown itself) stays visible to actual admins
+  // even when previewing as another role — otherwise they can't switch back
   var adminNav = document.getElementById('admin-nav');
-  if(adminNav) adminNav.style.display = getEffectiveAdmin() ? 'block' : 'none';
+  if(adminNav) adminNav.style.display = _isAdmin ? 'block' : 'none';
+  // Hide just the Users panel button when previewing non-admin role
+  var usersBtn = document.querySelector('#admin-nav button[onclick*="users"]');
+  if(usersBtn) usersBtn.style.display = getEffectiveAdmin() ? '' : 'none';
   var banner = document.getElementById('view-as-banner');
   if(banner){
     if(_viewAsRole){
@@ -870,7 +875,7 @@ async function renderUsersPanel(){
         }
         // Reset button (for tester)
         if(u.role==='tester'){
-          html += '<button class="btn btn-danger btn-sm" onclick="adminResetTester(\''+u.id+'\',\''+esc(u.username||'this user')+'\')">🗑️ Reset Data</button>';
+          html += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="adminResetTester(\''+u.id+'\',\''+esc(u.username||'this user')+'\')">🗑️ Reset Data</button>';
         }
         html += '</div>';
       }
@@ -896,7 +901,7 @@ async function renderUsersPanel(){
         html += '<span style="font-size:12px;color:var(--text-muted)">Used: '+( c.uses||0)+'x</span>';
         html += '<span style="font-size:12px;color:'+(c.is_active?'var(--success)':'var(--danger)')+'">'+( c.is_active?'Active':'Inactive')+'</span>';
         html += '<button class="btn btn-ghost btn-sm" onclick="toggleInviteCode(\''+c.id+'\','+(c.is_active?'true':'false')+')">'+( c.is_active?'Deactivate':'Activate')+'</button>';
-        html += '<button class="btn btn-danger btn-sm" onclick="deleteInviteCode(\''+c.id+'\')">Del</button>';
+        html += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteInviteCode(\''+c.id+'\')">Del</button>';
         html += '</div>';
       });
     }catch(e){}
@@ -1073,7 +1078,12 @@ async function renderFeedbackPage(){
 
     // ── KNOWN BUGS SECTION (always visible) ────────────────────────────
     html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--warning)">';
-    html += '<div class="stat-label" style="margin-bottom:12px;color:var(--warning)">&#x1F41B; Known Bugs'+(knownBugs.length>0?' ('+knownBugs.length+')':'')+'</div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">';
+    html += '<div class="stat-label" style="color:var(--warning)">&#x1F41B; Known Bugs'+(knownBugs.length>0?' ('+knownBugs.length+')':'')+'</div>';
+    if(_isAdmin){
+      html += '<button class="btn btn-secondary btn-sm" onclick="addKnownBugManually()">+ Add Known Bug</button>';
+    }
+    html += '</div>';
     if(knownBugs.length > 0){
       knownBugs.forEach(function(b){
         html += renderKnownBug(b, false);
@@ -1195,13 +1205,36 @@ function renderFeedbackEntry(f){
       html += '<button class="btn btn-secondary btn-sm" onclick="publishKnownBug(\''+f.id+'\')">&#x1F4E2; Publish</button>';
     }
     html += '<button class="btn btn-ghost btn-sm" onclick="addAdminNote(\''+f.id+'\')">&#x1F4DD; Note</button>';
-    html += '<button class="btn btn-danger btn-sm" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
+    html += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteFeedback(\''+f.id+'\')">Del</button>';
   }
   html += '</div></div></div>';
   return html;
 }
 
 // ─── KNOWN BUG ADMIN ACTIONS ──────────────────────────────────────────────────────────────────
+
+async function addKnownBugManually(){
+  var title = prompt('Bug title:');
+  if(!title || !title.trim()) return;
+  var location = prompt('Location (which page?):') || '';
+  var desc = prompt('Description (optional):') || '';
+  var uname = (_currentUserProfile && (_currentUserProfile.display_name || _currentUserProfile.username)) || 'Admin';
+  var{error} = await db.from('feedback').insert({
+    user_id: currentUser.id,
+    username: uname,
+    user_color: (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700',
+    type: 'Bug Report',
+    title: title.trim(),
+    location: location || null,
+    description: desc || null,
+    status: 'new',
+    is_published: true
+  });
+  if(error){ toast(error.message,'error'); return; }
+  toast('Known bug added','success');
+  await renderFeedbackPage();
+}
+
 async function publishKnownBug(id){
   // Get the bug to check if it has a title
   var bRes = await db.from('feedback').select('title,description').eq('id',id).single();
@@ -1282,7 +1315,7 @@ async function submitFeedback(){
   // Gather fields based on type
   var title = val('fb-title') || val('fb-doing') || '';
   var description = val('fb-description') || val('fb-expected') || '';
-  if(!title && !description) return toast('Please fill in the details', 'error');
+  if(!description && !title && !(document.getElementById('fb-doing')&&document.getElementById('fb-doing').value.trim())) return toast('Please fill in the details', 'error');
   // Build extra structured fields
   var extra = {};
   if(type === 'Bug Report'){
@@ -1484,7 +1517,7 @@ async function renderAnnouncementsCard(){
       roleBanners += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(a.created_at)+'</div>';
       roleBanners += '</div>';
       if(_isAdmin){
-        roleBanners += '<button class="btn btn-danger btn-sm" onclick="deleteAnnouncement(\''+a.id+'\')">Del</button>';
+        roleBanners += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteAnnouncement(\''+a.id+'\')">Del</button>';
       }
       roleBanners += '</div>';
     });
@@ -1627,7 +1660,7 @@ async function submitFeedback(){
   var type = val('feedback-type') || 'bug';
   var title = val('feedback-title');
   var desc = val('feedback-desc');
-  if(!title) return toast('Please enter a title','error');
+  // title is optional for user submissions — admin sets at publish time
   var uname = (_currentUserProfile && (_currentUserProfile.display_name||_currentUserProfile.username)) || 'Unknown';
   var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
   var{error} = await db.from('feedback').insert({
@@ -1704,8 +1737,8 @@ async function renderDashboard(){
       getVehicles(),
       getReminders()
     ]);
-    parts = inv;
-    totalParts = inv.length;
+    parts = inv.filter(function(p){ return !p.is_historical; });
+    totalParts = parts.reduce(function(sum,p){ return sum + (p.quantity||0); }, 0);
     totalVehicles = veh.length;
     reminders = rems;
     // Stale photos — use cached vehicles, no extra query
@@ -1721,7 +1754,7 @@ async function renderDashboard(){
       });
     }
   }catch(err){el.innerHTML=errBox(err.message);console.error('Dashboard error:',err);return;}
-  const lowStock=parts.filter(p=>p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
+  const lowStock=parts.filter(p=>!p.is_historical&&p.low_stock_threshold!==null&&p.low_stock_threshold!==undefined&&p.quantity<=p.low_stock_threshold);
   const today=new Date();
   const upcoming=reminders.filter(r=>{if(r.snoozed_until_date&&new Date(r.snoozed_until_date)>today)return false;if(r.next_due_date){const days=(new Date(r.next_due_date)-today)/86400000;if(days<=30)return true}return false});
   var announcementsCard = await renderAnnouncementsCard();
@@ -1733,7 +1766,7 @@ async function renderDashboard(){
     <div class="stat-card"><div class="stat-label">Upcoming Service</div><div class="stat-value" style="color:${upcoming.length>0?'var(--warning)':'var(--success)'}">${upcoming.length}</div><div style="font-size:12px;color:var(--text-muted)">Due within 30 days</div></div>
   </div>
   ${announcementsCard}
-  ${upcoming.length>0?`<div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⚠️ Upcoming Maintenance</div>${upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('')}</div>`:''}
+  <div class="card" style="margin-bottom:16px"><div class="stat-label" style="margin-bottom:14px">⏰ Upcoming Maintenance ${upcoming.length>0?`(${upcoming.length})`:''}</div>${upcoming.length>0 ? upcoming.slice(0,5).map(r=>`<div class="alert alert-warning"><strong>${esc(r.title)}</strong>  -  ${r.vehicles?`${r.vehicles.year} ${r.vehicles.make} ${r.vehicles.model}`:'Unknown'}${r.next_due_date?` · Due ${fmtDate(r.next_due_date)}`:''}</div>`).join('') : '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No maintenance due soon. \u{1F44D}</div>'}</div>
   ${lowStock.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">🔴 Low Stock / Restock Alerts</div>${lowStock.slice(0,8).map(p=>`<div class="alert alert-danger"><strong>${esc(p.name)}</strong>${p.part_number?` · #${esc(p.part_number)}`:''}  -  <strong>${p.quantity}</strong> remaining</div>`).join('')}</div>`:''}
   ${stalePhotoVehicles.length>0?`<div class="card"><div class="stat-label" style="margin-bottom:14px">📸 Vehicle Photos Need Updating</div>${stalePhotoVehicles.map(p=>`<div class="alert alert-warning" style="cursor:pointer" onclick="showView('vehicle-profile',{id:'${p.vehicle_id}',tab:'photos'})"><strong>${p.vehicles?getVehicleDisplayName(p.vehicles):'Vehicle'}</strong> · Photos not updated in over a year — tap to update 📷</div>`).join('')}</div>`:''}`;
 }
@@ -1989,7 +2022,12 @@ async function renderPartProfile(arg){
   }
 
   html += '<div style="flex:1;min-width:250px">';
+  html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
   html += '<div class="ms-part-name">'+esc(cp.name)+'</div>';
+  if(_isAdmin){
+    html += '<button class="btn btn-ghost btn-sm" onclick="showCatalogEditModal(\''+cp.id+'\')" title="Edit catalog info for this part type (admin only)" style="padding:2px 8px;font-size:11px">✏️ Edit</button>';
+  }
+  html += '</div>';
   html += '<div class="ms-part-cat">'+esc(cp.cat)+(cp.sub?' · '+esc(cp.sub):'')+'</div>';
   html += '<div class="ms-status-line">Status: <strong style="color:'+(totalQty>0?'var(--success)':'var(--danger)')+'">'+(totalQty>0?totalQty+' in stock':'Out of stock')+'</strong>';
   if(topInv?.shelf_location) html += ' · 📍 <strong>'+esc(topInv.shelf_location)+'</strong>';
@@ -2002,9 +2040,7 @@ async function renderPartProfile(arg){
 
   // Quick links + edit button
   html += '<div class="ms-contact-box" style="min-width:180px">';
-  html += '<div class="ms-contact-title" style="display:flex;justify-content:space-between;align-items:center">Quick Links';
-  html += '<button class="btn btn-ghost btn-sm" onclick="showCatalogEditModal(\''+cp.id+'\')" title="Edit this part type" style="padding:2px 6px">✏️</button>';
-  html += '</div>';
+  html += '<div class="ms-contact-title">Quick Links</div>';
   html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.youtube.com/results?search_query='+youtubeQ+'\',\'_blank\')">▶️ YouTube Guide</button>';
   html += '<button class="ms-contact-btn" onclick="window.open(\'https://www.amazon.com/s?k='+amazonQ+'\',\'_blank\')">🛒 Amazon</button>';
   html += '<button class="ms-contact-btn" onclick="openRockAuto(\''+cp.cat+'\',\''+cp.fits+'\')">🔩 RockAuto</button>';
@@ -2015,8 +2051,31 @@ async function renderPartProfile(arg){
   // Two column body
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 4px">';
 
-  // LEFT COLUMN
+  // LEFT COLUMN — Inventory Details, Part Numbers, Stock Locations
   html += '<div>';
+  if(inv.length>0 && totalQty>0){
+    html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
+    html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">'+totalQty+'</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">'+condBadge(topInv?.condition)+'</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">'+esc(topInv?.source||'-')+'</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">'+(topInv?.date_acquired?fmtDate(topInv.date_acquired):'-')+'</span></div>';
+    if(topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$'+topInv.price_paid+'</span></div>';
+    if(topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">'+esc(topInv.sourced_from_vehicle)+'</span></div>';
+    html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
+    if(topInv?.receipt_url) html += '<a href="'+topInv.receipt_url+'" target="_blank" class="btn btn-secondary btn-sm">📄 Receipt</a>';
+    html += '<button class="btn btn-secondary btn-sm" onclick="showEditInventoryModal(\''+(topInv?.id||'')+'\',\''+cp.id+'\')">✏️ Edit</button>';
+    if(topInv?.condition==='Used - Poor'){
+      html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist a replacement</button>';
+    }
+    html += '</div></div></div>';
+  } else {
+    html += '<div class="ms-box"><div class="ms-box-title">Not In Stock</div><div class="ms-box-body">';
+    html += '<div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">This part is not currently in your inventory.</div>';
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+    html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\''+cp.id+'\')">+ Add to Inventory</button>';
+    html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
+    html += '</div></div></div>';
+  }
 
   // Part Numbers box
   html += '<div class="ms-box"><div class="ms-box-title">Part Numbers</div><div class="ms-box-body">';
@@ -2042,8 +2101,8 @@ async function renderPartProfile(arg){
   }
   html += '</div></div>';
 
-  // Stock locations - show if ANY inventory record exists (even qty 0)
-  if(inv.length>0){
+  // Stock locations - hide when all stock is depleted
+  if(inv.length>0 && totalQty>0){
     html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
     html += renderInvLocations(inv, cp.name, cp.oem||'');
     html += '</div></div>';
@@ -2051,33 +2110,11 @@ async function renderPartProfile(arg){
 
   html += '</div>'; // end left
 
-  // RIGHT COLUMN
+
+  html += '</div>'; // end left
+
+  // RIGHT COLUMN — What You Need, Notes, Installation History
   html += '<div>';
-
-  if(inv.length>0){
-    html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
-    html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">'+totalQty+'</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">'+condBadge(topInv?.condition)+'</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">'+esc(topInv?.source||'-')+'</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">'+(topInv?.date_acquired?fmtDate(topInv.date_acquired):'-')+'</span></div>';
-    if(topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$'+topInv.price_paid+'</span></div>';
-    if(topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">'+esc(topInv.sourced_from_vehicle)+'</span></div>';
-    html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
-    if(topInv?.receipt_url) html += '<a href="'+topInv.receipt_url+'" target="_blank" class="btn btn-secondary btn-sm">📄 Receipt</a>';
-    html += '<button class="btn btn-secondary btn-sm" onclick="showEditInventoryModal(\''+(topInv?.id||'')+'\',\''+cp.id+'\')">✏️ Edit</button>';
-    if(topInv?.condition==='Used - Poor'){
-      html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist a replacement</button>';
-    }
-    html += '</div></div></div>';
-  } else {
-    html += '<div class="ms-box"><div class="ms-box-title">Not In Stock</div><div class="ms-box-body">';
-    html += '<div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">This part is not currently in your inventory.</div>';
-    html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-    html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\''+cp.id+'\')">+ Add to Inventory</button>';
-    html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
-    html += '</div></div></div>';
-  }
-
   // What You Need box
   if(pd){
     html += '<div class="ms-box"><div class="ms-box-title" style="background:#8B0000">🔧 What You Need</div><div class="ms-box-body">';
@@ -2126,14 +2163,6 @@ async function renderPartProfile(arg){
   html += '</div>'; // end right
   html += '</div>'; // end grid
 
-  // Comments section
-  html += '<div class="ms-box" style="margin-top:20px"><div class="ms-box-title">💬 Comments</div>';
-  html += '<div id="comments-part-'+id+'"></div></div>';
-
-  if(el.dataset.renderToken != myToken) return; // navigated away, discard
-  if(String(el.dataset.renderToken) !== String(myToken)) return; // navigated away
-  el.innerHTML = html;
-  // Load comments after render
   renderComments('part', id, 'comments-part-'+id);
 }
 
@@ -3204,7 +3233,7 @@ async function openPhotoDetail(photoId, vehicleId){
     history.slice(0,6).map(function(h){return '<div style="flex-shrink:0"><img src="'+h.image_url+'" style="width:80px;height:60px;object-fit:cover;border-radius:4px;opacity:.7"><div style="font-size:10px;color:var(--text-muted);text-align:center">'+fmtDate(h.uploaded_at)+'</div></div>';}).join('')+
     '</div></div>':'')+'</div>'+
     '<div class="modal-footer">'+
-    '<button class="btn btn-danger btn-sm" onclick="deleteVehiclePhoto(\''+photoId+'\',\''+vehicleId+'\')">Delete</button>'+
+    '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteVehiclePhoto(\''+photoId+'\',\''+vehicleId+'\')">Delete</button>'+
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>'+
     '<button class="btn btn-primary" onclick="savePhotoTags(\''+photoId+'\',\''+vehicleId+'\')">Save Tags</button>'+
     '</div></div></div>');
@@ -3257,7 +3286,7 @@ async function saveServiceRecord(vehicleId){const t=val('sr-type');if(!t)return 
 async function deleteServiceRecord(id){if(!confirm('Delete this record?'))return;await db.from('service_history').delete().eq('id',id);toast('Deleted','success');invalidate();await refreshVehicleView()}
 
 async function showInstallPartModal(invId, cpId, partName, condition, location){
-  var compatVehicles=_session.vehicles||[];
+  var compatVehicles = await getVehicles();
   if(cpId){
     var cp=_catalog.find(function(p){return p.id===cpId;});
     if(cp&&cp.fits!=='all'){
@@ -3773,9 +3802,9 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
 
     c += '</div>';
     c += '<div class="flex-row no-print" style="flex-wrap:wrap;gap:4px">';
-    c += '<button class="btn btn-secondary btn-sm" onclick="showSnoozeModal(\''+r.id+'\',\''+esc(r.title).replace(/\'/g,"&#39;")+'\')">Snooze</button>';
-    c += '<button class="btn btn-secondary btn-sm" onclick="markReminderDone(\''+r.id+'\',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
-    c += '<button class="btn btn-ghost btn-sm" onclick="deleteReminder(\''+r.id+'\')">Del</button>';
+    c += '<button class="btn btn-secondary btn-sm" title="Delay this reminder until a later date or mileage" onclick="showSnoozeModal(\''+r.id+'\',\''+esc(r.title).replace(/\'/g,"&#39;")+'\')">Snooze</button>';
+    c += '<button class="btn btn-secondary btn-sm" title="Mark as completed. Routine reminders will recur; follow-ups will be removed." onclick="markReminderDone(\''+r.id+'\',_currentVehicleProfile.id,'+(vehicle.current_mileage||0)+')">Done</button>';
+    c += '<button class="btn btn-ghost btn-sm" title="Permanently delete this reminder (cannot be undone)" onclick="deleteReminder(\''+r.id+'\')">Del</button>';
     c += '</div></div></div>';
     return c;
   }
@@ -3805,22 +3834,64 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
 
 
 async function printVehicleProfile(vehicleId){
-  const{data:v}=await db.from('vehicles').select('*').eq('id',vehicleId).single();
-  const[{data:services},{data:installs}]=await Promise.all([db.from('service_history').select('*').eq('vehicle_id',vehicleId).order('performed_date',{ascending:false}),db.from('part_installations').select('*,parts(name,part_number,condition,source,oem_part_number)').eq('vehicle_id',vehicleId).order('installed_date',{ascending:false})]);
-  const active=(installs||[]).filter(i=>!i.removed_date);
-  const w=window.open('','_blank');
-  w.document.write(`<html><head><title>${v.year} ${v.make} ${v.model} Profile</title><style>body{font-family:Arial,sans-serif;padding:30px;color:#111;font-size:13px}h1{font-size:24px;margin:0 0 4px;color:#0051BA}h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #0051BA;padding-bottom:4px;margin:20px 0 12px;color:#0051BA}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;padding:5px 8px}td{padding:6px 8px;border-bottom:1px solid #eee;font-size:12px}.sub{color:#E8000D;font-size:13px;margin-bottom:20px;font-weight:600}.footer{margin-top:30px;font-size:11px;color:#999;border-top:1px solid #ddd;padding-top:10px}</style></head><body>
-    <div style="position:sticky;top:0;background:#fff;padding:10px 0;border-bottom:1px solid #ddd;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:11px;color:#666">Click Print, then close this tab</span><button onclick="window.print()" style="padding:8px 20px;background:#0051BA;color:#fff;border:0;border-radius:4px;font-size:14px;cursor:pointer;font-weight:600">🖨️ Print This</button></div>
-    <h1>🚗 ${v.year} ${v.make} ${v.model}${v.trim?' '+v.trim:''}</h1>
-    <div class="sub">${[v.color,v.current_mileage?v.current_mileage.toLocaleString()+' miles':null,v.vin?'VIN: '+v.vin:null].filter(Boolean).join(' · ')}</div>
-    ${v.notes?`<div style="margin-bottom:16px;padding:10px;background:#f9f9f9;border-left:3px solid #0051BA;font-size:12px">${v.notes}</div>`:''}
-    <h2>Currently Installed Parts (${active.length})</h2>
-    ${active.length===0?'<p style="color:#999">None recorded</p>':`<table><thead><tr><th>Part</th><th>Part #</th><th>Condition</th><th>Source</th><th>Installed</th><th>Mileage</th></tr></thead><tbody>${active.map(i=>`<tr><td><strong>${i.parts?i.parts.name:'Unknown'}</strong></td><td>${i.parts?.part_number||' - '}</td><td>${i.parts?.condition||' - '}</td><td>${i.parts?.source||' - '}</td><td>${i.installed_date?new Date(i.installed_date+'T12:00:00').toLocaleDateString():' - '}</td><td>${i.installed_mileage?i.installed_mileage.toLocaleString()+' mi':' - '}</td></tr>`).join('')}</tbody></table>`}
-    <h2>Service History (${(services||[]).length} records)</h2>
-    ${(!services||services.length===0)?'<p style="color:#999">None recorded</p>':`<table><thead><tr><th>Service</th><th>Date</th><th>Mileage</th><th>By</th><th>Notes</th></tr></thead><tbody>${services.map(s=>`<tr><td><strong>${s.service_type||' - '}</strong>${s.description?`<br><span style="color:#666;font-size:11px">${s.description}</span>`:''}</td><td>${s.performed_date?new Date(s.performed_date+'T12:00:00').toLocaleDateString():' - '}</td><td>${s.mileage_at_service?s.mileage_at_service.toLocaleString()+' mi':' - '}</td><td>${s.performed_by||' - '}</td><td style="color:#666;font-size:11px">${s.notes||''}</td></tr>`).join('')}</tbody></table>`}
-    <div class="footer">🐔 Chicken Zone Inventory Manager · ${new Date().toLocaleDateString()}</div>
-  </body></html>`);
-  // Manual print via button
+  var{data:v} = await db.from('vehicles').select('*').eq('id',vehicleId).single();
+  var[{data:services},{data:installs}] = await Promise.all([
+    db.from('service_history').select('*').eq('vehicle_id',vehicleId).order('performed_date',{ascending:false}),
+    db.from('part_installations').select('*,parts(name,part_number,condition,source,oem_part_number,price_paid)').eq('vehicle_id',vehicleId).order('installed_date',{ascending:false})
+  ]);
+  var active = (installs||[]).filter(function(i){ return !i.removed_date; });
+
+  // Extract specs from notes field (Engine, Transmission, Interior)
+  var notes = v.notes || '';
+  var engineMatch = notes.match(/Engine:\s*([^.,\n]+)/i);
+  var transMatch = notes.match(/Trans(?:mission)?:\s*([^.,\n]+)/i);
+  var interiorMatch = notes.match(/([A-Za-z]+)\s+interior/i);
+  var engine = engineMatch ? engineMatch[1].trim() : '-';
+  var transmission = transMatch ? transMatch[1].trim() : '-';
+  var interior = interiorMatch ? interiorMatch[1] : '-';
+
+  var w = window.open('', '_blank');
+  w.document.write(`<html><head><title>${v.year} ${v.make} ${v.model} Profile</title>
+<style>
+body{font-family:Arial,sans-serif;padding:30px;color:#111;font-size:13px}
+h1{font-size:24px;margin:0 0 4px;color:#0051BA}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #0051BA;padding-bottom:4px;margin:20px 0 12px;color:#0051BA}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;text-transform:uppercase;color:#111;border-bottom:1px solid #ddd;padding:5px 8px}
+td{padding:6px 8px;border-bottom:1px solid #eee;font-size:12px;color:#111}
+.specs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;margin-bottom:16px}
+.spec-item{font-size:12px}
+.spec-label{font-size:10px;text-transform:uppercase;color:#666;letter-spacing:1px}
+.footer{margin-top:30px;font-size:11px;color:#999;border-top:1px solid #ddd;padding-top:10px}
+</style></head><body>
+<div style="position:sticky;top:0;background:#fff;padding:10px 0;border-bottom:1px solid #ddd;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center">
+<span style="font-size:11px;color:#666">Click Print, then close this tab</span>
+<button onclick="window.print()" style="padding:8px 20px;background:#0051BA;color:#fff;border:0;border-radius:4px;font-size:14px;cursor:pointer;font-weight:600">🖨️ Print This</button>
+</div>
+<h1>🚗 ${v.year} ${v.make} ${v.model}${v.trim ? ' ' + v.trim : ''}</h1>
+<div style="color:#E8000D;font-size:13px;margin-bottom:16px;font-weight:600">${[v.color, v.vin ? 'VIN: ' + v.vin : null].filter(Boolean).join(' · ')}</div>
+<h2>Specs</h2>
+<div class="specs-grid">
+  <div class="spec-item"><div class="spec-label">Engine</div><div>${engine}</div></div>
+  <div class="spec-item"><div class="spec-label">Transmission</div><div>${transmission}</div></div>
+  <div class="spec-item"><div class="spec-label">Interior Color</div><div>${interior}</div></div>
+  <div class="spec-item"><div class="spec-label">Current Mileage</div><div>${v.current_mileage ? v.current_mileage.toLocaleString() + ' mi' : '-'}</div></div>
+</div>
+<h2>Currently Installed Parts (${active.length})</h2>
+${active.length === 0 ? '<p style="color:#999">None recorded</p>' : `
+<table><thead><tr>
+<th>Part</th><th>Part #</th><th>Condition</th><th>Installed</th><th>Mileage</th><th>Cost</th>
+</tr></thead><tbody>
+${active.map(function(i){ return '<tr><td><strong>' + (i.parts ? i.parts.name : 'Unknown') + '</strong></td><td>' + (i.parts && i.parts.part_number ? i.parts.part_number : '-') + '</td><td>' + (i.parts && i.parts.condition ? i.parts.condition : '-') + '</td><td>' + (i.installed_date ? new Date(i.installed_date + 'T12:00:00').toLocaleDateString() : '-') + '</td><td>' + (i.installed_mileage ? i.installed_mileage.toLocaleString() + ' mi' : '-') + '</td><td>' + (i.parts && i.parts.price_paid ? '$' + i.parts.price_paid : '-') + '</td></tr>'; }).join('')}
+</tbody></table>`}
+<h2>Service History (${(services||[]).length} records)</h2>
+${(!services || services.length === 0) ? '<p style="color:#999">None recorded</p>' : `
+<table><thead><tr><th>Service</th><th>Date</th><th>Mileage</th><th>By</th></tr></thead><tbody>
+${services.map(function(s){ return '<tr><td><strong>' + (s.service_type || '-') + '</strong></td><td>' + (s.performed_date ? new Date(s.performed_date + 'T12:00:00').toLocaleDateString() : '-') + '</td><td>' + (s.mileage_at_service ? s.mileage_at_service.toLocaleString() + ' mi' : '-') + '</td><td>' + (s.performed_by || '-') + '</td></tr>'; }).join('')}
+</tbody></table>`}
+<div class="footer">🐔 Chicken Zone Inventory Manager · ${new Date().toLocaleDateString()}</div>
+</body></html>`);
+  // Manual print via button — auto-print could freeze the parent window
 }
 
 // ─── WISHLIST ─────────────────────────────────────────────────────────────────
