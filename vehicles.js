@@ -5,7 +5,9 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── VEHICLES LIST PAGE ──────────────────────────────────────────────────────
 async function renderVehicles(){
+  var myToken = Date.now();
   const el=document.getElementById('view-vehicles');
+  el.dataset.renderToken = myToken;
   let vehicles=[];
   let ownerProfiles=[];
   try{
