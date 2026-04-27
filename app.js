@@ -2887,6 +2887,7 @@ async function renderVehicles(){
     });
     html+='</div>';
   }
+  if(String(el.dataset.renderToken) !== String(myToken)) return; // navigated away, discard stale render
   el.innerHTML=html;
 }
 
@@ -3789,8 +3790,8 @@ function renderRemindersTab(reminders, vehicle, vehicleId){
   var today = new Date();
   var html = '<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
   html += '<input type="text" class="form-control" id="rem-search" placeholder="&#x1F50D; Search reminders..." style="flex:1;font-size:13px" oninput="filterReminders(this.value)">';
-  html += '<button class="btn btn-primary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id,\'follow_up\')">+ Follow-up</button>';
-  html += '<button class="btn btn-secondary btn-sm" onclick="showReminderModal(_currentVehicleProfile.id,\'routine\')">+ Routine</button>';
+  html += '<button class="btn btn-primary btn-sm" title="One-time task. When marked Done it logs a comment and removes from list." onclick="showReminderModal(_currentVehicleProfile.id,\'follow_up\')">+ Follow-up</button>';
+  html += '<button class="btn btn-primary btn-sm" title="Repeating maintenance. When marked Done it recalculates next due date and stays on the list." onclick="showReminderModal(_currentVehicleProfile.id,\'routine\')">+ Routine</button>';
   html += '</div>';
 
   if(!reminders || reminders.length === 0){
