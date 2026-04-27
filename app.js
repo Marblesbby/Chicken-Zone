@@ -184,7 +184,7 @@ function errBox(msg, techDetail){
   // Detect the common first-load timeout — show a friendly explanation instead of scary error
   var isFirstLoadTimeout = msg && (msg.indexOf('timed out') >= 0 || msg.indexOf('Request timed out') >= 0);
   var reportBtn = currentUser
-    ? '<button class="btn btn-secondary btn-sm" onclick="openBugReportFromError()">&#x1F41B; Report Bug</button>'
+    ? '<button class="btn btn-secondary btn-sm btn-bug-report" onclick="openBugReportFromError()">&#x1F41B; Report Bug</button>'
     : '';
   if(isFirstLoadTimeout){
     return '<div style="padding:40px 32px">' +
