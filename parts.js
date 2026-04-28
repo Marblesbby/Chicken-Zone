@@ -218,10 +218,6 @@ async function renderPartProfile(arg) {
 
     html += '</div>'; // end left
 
-
-<<<<<<< HEAD
-    html += '</div>'; // end left
-
     // RIGHT COLUMN — What You Need, Notes, Installation History
     html += '<div>';
     // What You Need box
