@@ -571,7 +571,7 @@ async function signUp(){
   var assignedRole = 'viewer';
   if(invCode){
     // First check if code exists at all (regardless of active status)
-    var existsRes = await db.from('invite_codes').select('*').eq('code', invCode);
+    var existsRes = await var existsRes = await db.from('invite_codes').select('*').ilike('code', invCode);
     if(existsRes.error){
       toast('Could not check invite code (database access issue). Please try again.', 'error');
       return;
