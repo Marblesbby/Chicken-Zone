@@ -99,7 +99,7 @@ async function renderUserProfile(){
 async function applyInviteCodeFromProfile(){
   var codeInput = (val('profile-invite-code')||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
   if(!codeInput) return toast('Enter an invite code','error');
-  var existsRes = await db.from('invite_codes').select('*').eq('code', codeInput);
+  var existsRes = await db.from('invite_codes').select('*').ilike('code', codeInput);
   if(existsRes.error){ toast('Could not check invite code. Try again.','error'); return; }
   if(!existsRes.data || existsRes.data.length === 0){
     toast('Invite code not found. Check spelling and try again.','error'); return;
