@@ -228,8 +228,8 @@ input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1) brightnes
 input[type="date"]::-webkit-calendar-picker-indicator:hover{opacity:1}
 
 /* ── VIEWER MODE — grey out action buttons, keep nav/feedback/profile ── */
-.viewer-mode .btn-primary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report),
-.viewer-mode .btn-secondary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report) {
+.viewer-mode .btn-primary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report):not(#view-profile *),
+.viewer-mode .btn-secondary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report):not(#view-profile *) {
   opacity: 0.45;
   pointer-events: none;
   cursor: not-allowed;
