@@ -1,5 +1,5 @@
 // ─── CHICKEN ZONE — parts.js — Auto Parts Page, Part Profile, Location Modal, Install Flow ──────
-// Depends on: app.js
+// Depends on: app.js 
 
 // ─── PART PROFILE - FULL PAGE VIEW ───────────────────────────────────────────
 // (declared in foundation)
