@@ -728,6 +728,108 @@ async function deleteFeedback(id){
   await renderFeedbackPage();
 }
 
+// ─── KNOWN BUG ADMIN ACTIONS ─────────────────────────────────────────────────
+
+async function publishKnownBug(id){
+  var f = null;
+  try{ var r = await db.from('feedback').select('*').eq('id',id).single(); f = r.data; }catch(e){}
+  if(!f) return toast('Could not load feedback entry','error');
+  var title = prompt('Title for the known bug list:', f.title || '');
+  if(title === null) return;
+  if(!title.trim()) return toast('Title is required to publish','error');
+  var{error} = await db.from('feedback').update({
+    is_published: true, title: title.trim(), updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Bug published to Known Bugs list! 📢','success');
+  await renderFeedbackPage();
+}
+
+async function unpublishKnownBug(id){
+  if(!confirm('Remove this from the Known Bugs list?')) return;
+  var{error} = await db.from('feedback').update({
+    is_published: false, updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Unpublished','success');
+  await renderFeedbackPage();
+}
+
+async function resolveKnownBug(id){
+  var msg = prompt('Resolution message shown to users (e.g. "Fixed in v11"):');
+  if(msg === null) return;
+  var{error} = await db.from('feedback').update({
+    is_resolved: true, resolution_message: msg.trim() || 'Fixed.',
+    updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Marked as squashed! 🎉','success');
+  await renderFeedbackPage();
+}
+
+async function editKnownBug(id){
+  var f = null;
+  try{ var r = await db.from('feedback').select('*').eq('id',id).single(); f = r.data; }catch(e){}
+  if(!f) return toast('Could not load entry','error');
+  showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:480px">' +
+    '<div class="modal-header"><div class="modal-title">Edit Known Bug</div><button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<div class="form-group"><label>Title</label><input type="text" class="form-control" id="ekb-title" value="'+esc(f.title||'')+'"></div>' +
+    '<div class="form-group"><label>Description</label><textarea class="form-control" id="ekb-desc" rows="3">'+esc(f.description||'')+'</textarea></div>' +
+    '<div class="form-group"><label>Resolution Message</label><input type="text" class="form-control" id="ekb-res" value="'+esc(f.resolution_message||'')+'" placeholder="e.g. Fixed in v11"></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveKnownBugEdit(\''+id+'\')">Save</button>' +
+    '</div></div></div>');
+}
+
+async function saveKnownBugEdit(id){
+  var title = val('ekb-title');
+  if(!title) return toast('Title is required','error');
+  var{error} = await db.from('feedback').update({
+    title: title, description: val('ekb-desc')||null,
+    resolution_message: val('ekb-res')||null, updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Updated!','success'); closeModal(); await renderFeedbackPage();
+}
+
+async function addKnownBugManually(){
+  showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:480px">' +
+    '<div class="modal-header"><div class="modal-title">Add Known Bug</div><button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<div class="form-group"><label>Title *</label><input type="text" class="form-control" id="akb-title" placeholder="Brief description of the bug"></div>' +
+    '<div class="form-group"><label>Description</label><textarea class="form-control" id="akb-desc" rows="3" placeholder="Steps to reproduce, affected areas..."></textarea></div>' +
+    '<div class="form-group"><label>Location</label><select class="form-control" id="akb-loc"><option value="">Select page...</option>' +
+    FEEDBACK_LOCATIONS.map(function(l){ return '<option>'+l+'</option>'; }).join('') + '</select></div>' +
+    '<div class="form-group"><label>Severity</label><select class="form-control" id="akb-sev"><option value="">Select...</option>' +
+    ['Critical — app is broken','High — major feature affected','Medium — annoying but workable','Low — minor issue'].map(function(s){ return '<option>'+s+'</option>'; }).join('') + '</select></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveManualKnownBug()">Publish Bug</button>' +
+    '</div></div></div>');
+}
+
+async function saveManualKnownBug(){
+  var title = val('akb-title');
+  if(!title) return toast('Title is required','error');
+  var sev = val('akb-sev');
+  var uname = (_currentUserProfile&&(_currentUserProfile.display_name||_currentUserProfile.username))||'Admin';
+  var ucolor = (_currentUserProfile&&_currentUserProfile.user_color)||'#FFD700';
+  var{error} = await db.from('feedback').insert({
+    user_id: currentUser.id, username: uname, user_color: ucolor,
+    type: 'Bug Report', title: title, description: val('akb-desc')||null,
+    location: val('akb-loc')||null, extra_fields: sev ? JSON.stringify({Severity:sev}) : null,
+    is_published: true, status: 'new'
+  });
+  if(error){ toast(error.message,'error'); return; }
+  toast('Known bug published!','success'); closeModal(); await renderFeedbackPage();
+}
+
 
 
 // ─── COMMENTS SYSTEM ─────────────────────────────────────────────────────────
@@ -819,7 +921,7 @@ async function renderAnnouncementsCard(){
   html += '\u{1F4EC} Announcements';
   html += '<span title="Notes from admins and resolved bug fixes appear here." style="cursor:help;color:var(--text-muted);font-size:13px">\u24D8</span>';
   html += '</div>';
-  if(_isAdmin){
+  if(_isAdmin && getEffectiveRole() === 'admin'){
     html += '<button class="btn btn-primary btn-sm" onclick="showAnnouncementModal()">+ New Announcement</button>';
   }
   html += '</div>';
