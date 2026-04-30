@@ -417,9 +417,50 @@ async function adminDeleteInstalls(userId, username){
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
 var FEEDBACK_LOCATIONS = [
-  'Dashboard','Auto Parts','Part Profile','Vehicles','Vehicle Profile',
+  'Log In / Sign Up','Dashboard','Auto Parts','Part Profile','Vehicles','Vehicle Profile',
   'Wishlist','Feedback','My Profile','New Page','General / Other'
 ];
+
+function updateFeedbackForm() {
+  var type = val('fb-type');
+  var container = document.getElementById('fb-dynamic-fields');
+  if (!container) return;
+  if (!type) { container.innerHTML = ''; return; }
+
+  var html = '';
+  // Title — always shown
+  html += '<div class="form-group"><label>Title <span style="color:var(--text-muted);font-weight:400">(brief summary)</span></label>';
+  html += '<input type="text" class="form-control" id="fb-title" placeholder="e.g. Button doesn\'t respond on mobile"></div>';
+
+  // Description — always shown
+  html += '<div class="form-group"><label>Description</label>';
+  html += '<textarea class="form-control" id="fb-desc" rows="3" placeholder="Describe what happened, what you expected, any steps to reproduce..."></textarea></div>';
+
+  // Type-specific fields
+  if (type === 'Bug Report') {
+    html += '<div class="grid-2">';
+    html += '<div class="form-group"><label>Severity</label><select class="form-control" id="fb-severity">';
+    html += '<option value="">Select...</option>';
+    ['Critical — app is broken','High — major feature affected','Medium — annoying but workable','Low — minor issue'].forEach(function(s){ html += '<option>'+s+'</option>'; });
+    html += '</select></div>';
+    html += '<div class="form-group"><label>Does it happen every time?</label><select class="form-control" id="fb-repro">';
+    html += '<option value="">Select...</option>';
+    ['Yes — always','Sometimes','Only happened once'].forEach(function(s){ html += '<option>'+s+'</option>'; });
+    html += '</select></div>';
+    html += '</div>';
+  } else if (type === 'New Feature') {
+    html += '<div class="form-group"><label>Why would this be useful?</label>';
+    html += '<textarea class="form-control" id="fb-why" rows="2" placeholder="Who would use it and how often?"></textarea></div>';
+  } else if (type === 'Improvement') {
+    html += '<div class="form-group"><label>What would you change?</label>';
+    html += '<textarea class="form-control" id="fb-change" rows="2" placeholder="What does it do now vs what it should do?"></textarea></div>';
+  } else if (type === 'Performance') {
+    html += '<div class="form-group"><label>What was slow?</label>';
+    html += '<textarea class="form-control" id="fb-slow" rows="2" placeholder="Which page or action felt slow? How long did it take?"></textarea></div>';
+  }
+
+  container.innerHTML = html;
+}
 
 async function renderFeedbackPage(){
   var el = document.getElementById('view-feedback');
@@ -961,23 +1002,41 @@ async function dismissResolution(bugId){
 // (renderFeedbackPage defined above)
 
 async function submitFeedback(){
-  var type = val('feedback-type') || 'bug';
-  var title = val('feedback-title');
-  var desc = val('feedback-desc');
-  // title is optional for user submissions — admin sets at publish time
+  var type = val('fb-type');
+  var location = val('fb-location');
+  var title = val('fb-title');
+  var desc = val('fb-desc');
+  if (!type) return toast('Please select a feedback type', 'error');
+  if (!title) return toast('Please add a brief title', 'error');
+
+  // Collect type-specific extra fields
+  var extra = {};
+  if (type === 'Bug Report') {
+    var sev = val('fb-severity'); if (sev) extra['Severity'] = sev;
+    var rep = val('fb-repro'); if (rep) extra['Reproducible'] = rep;
+  } else if (type === 'New Feature') {
+    var why = val('fb-why'); if (why) extra['Why useful'] = why;
+  } else if (type === 'Improvement') {
+    var chg = val('fb-change'); if (chg) extra['Suggested change'] = chg;
+  } else if (type === 'Performance') {
+    var slw = val('fb-slow'); if (slw) extra['What was slow'] = slw;
+  }
+
   var uname = (_currentUserProfile && (_currentUserProfile.display_name||_currentUserProfile.username)) || 'Unknown';
   var ucolor = (_currentUserProfile && _currentUserProfile.user_color) || '#FFD700';
-  var{error} = await db.from('feedback').insert({
+  var { error } = await db.from('feedback').insert({
     user_id: currentUser.id,
     username: uname,
     user_color: ucolor,
     type: type,
+    location: location || null,
     title: title,
-    description: desc,
+    description: desc || null,
+    extra_fields: Object.keys(extra).length > 0 ? JSON.stringify(extra) : null,
     status: 'new'
   });
-  if(error){ toast(error.message,'error'); return; }
-  toast('Feedback submitted! Thank you.','success');
+  if (error) { toast(error.message, 'error'); return; }
+  toast('Feedback submitted! Thank you \uD83D\uDC4D', 'success');
   await renderFeedbackPage();
 }
 
