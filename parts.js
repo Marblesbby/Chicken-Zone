@@ -163,29 +163,25 @@ async function renderPartProfile(arg) {
     html += '<div>';
 
     // Inventory Details (always shown)
-    if (inv.length > 0 && totalQty > 0) {
-        html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
-        html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">' + totalQty + '</span></div>';
-        html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">' + condBadge(topInv?.condition) + '</span></div>';
-        html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">' + esc(topInv?.source || '-') + '</span></div>';
-        html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">' + (topInv?.date_acquired ? fmtDate(topInv.date_acquired) : '-') + '</span></div>';
-        if (topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$' + topInv.price_paid + '</span></div>';
-        if (topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">' + esc(topInv.sourced_from_vehicle) + '</span></div>';
-        html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
+    html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
+    html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:' + (totalQty > 0 ? 'var(--accent)' : 'var(--text-dim)') + '">' + totalQty + '</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">' + (totalQty === 0 ? '<span style="color:var(--text-dim);font-size:12px">None</span>' : condBadge(topInv?.condition)) + '</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">' + (topInv?.source ? esc(topInv.source) : '-') + '</span></div>';
+    html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">' + (topInv?.date_acquired ? fmtDate(topInv.date_acquired) : '-') + '</span></div>';
+    if (topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$' + topInv.price_paid + '</span></div>';
+    if (topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">' + esc(topInv.sourced_from_vehicle) + '</span></div>';
+    html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
+    if (totalQty === 0) {
+        html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\'' + cp.id + '\')">+ Add to Inventory</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
+    } else {
         if (topInv?.receipt_url) html += '<a href="' + topInv.receipt_url + '" target="_blank" class="btn btn-secondary btn-sm">📄 Receipt</a>';
         html += '<button class="btn btn-secondary btn-sm" onclick="showEditInventoryModal(\'' + (topInv?.id || '') + '\',\'' + cp.id + '\')">✏️ Edit</button>';
         if (topInv?.condition === 'Used - Poor') {
             html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist a replacement</button>';
         }
-        html += '</div></div></div>';
-    } else {
-        html += '<div class="ms-box"><div class="ms-box-title">Not In Stock</div><div class="ms-box-body">';
-        html += '<div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">This part is not currently in your inventory.</div>';
-        html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-        html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\'' + cp.id + '\')">+ Add to Inventory</button>';
-        html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
-        html += '</div></div></div>';
     }
+    html += '</div></div></div>';
 
     // Part Numbers box
     html += '<div class="ms-box"><div class="ms-box-title">Part Numbers</div><div class="ms-box-body">';
@@ -270,8 +266,8 @@ async function renderPartProfile(arg) {
     html += '</div>'; // end right column
     html += '</div>'; // end grid
 
-    // Comments — full width below the grid
-    html += '<div style="margin-top:24px;padding:0 4px" id="comments-part-' + id + '"></div>';
+    // Comments — full width below the grid, matching vehicle profile style
+    html += '<div class="card" style="margin-top:24px;padding:0 4px"><div class="stat-label" style="margin-bottom:10px">💬 Comments</div><div id="comments-part-' + id + '"></div></div>';
 
     if (String(el.dataset.renderToken) !== String(myToken)) return;
     el.innerHTML = html;
