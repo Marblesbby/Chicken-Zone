@@ -156,11 +156,13 @@ async function renderPartProfile(arg) {
     html += '</div>';
     html += '</div></div>';
 
-    // Two column body
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 4px">';
+    // Two column body — scrollable if content overflows
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 4px;max-height:calc(100vh - 320px);overflow-y:auto">';
 
-    // LEFT COLUMN — Inventory Details, Part Numbers, Stock Locations
+    // LEFT COLUMN — Inventory Details, Part Numbers
     html += '<div>';
+
+    // Inventory Details (always shown)
     if (inv.length > 0 && totalQty > 0) {
         html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
         html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">' + totalQty + '</span></div>';
@@ -194,7 +196,7 @@ async function renderPartProfile(arg) {
     if (!cp.oem) html += '<div style="color:var(--text-dim);font-size:12px">No OEM # on file</div>';
     html += '</div></div>';
 
-    // Compatible Vehicles - clickable to specific cars
+    // Compatible Vehicles
     html += '<div class="ms-box"><div class="ms-box-title">Compatible Vehicles</div><div class="ms-box-body">';
     if (compatVehicles.length > 0) {
         compatVehicles.forEach(function (v) {
@@ -202,29 +204,18 @@ async function renderPartProfile(arg) {
             html += '<span class="compat-tag" style="cursor:pointer" onclick="startInstallForVehicle(\'' + v.id + '\',\'' + cp.id + '\')" title="Install a ' + esc(cp.name) + ' on this vehicle">🚗 ' + esc(vName) + '</span>';
         });
     } else {
-        // Fallback when no DB vehicles exist yet
         if (cp.fits === 'all') html += '<span class="compat-tag">🚗 All three cars</span>';
         else if (cp.fits === 'esc') html += '<span class="compat-tag">🚗 Jessie\'s Escalade</span>';
         else if (cp.fits === 'yk') html += '<span class="compat-tag">🚗 Both Denalis</span>';
     }
     html += '</div></div>';
 
-    // Stock locations - hide when all stock is depleted
-    if (inv.length > 0 && totalQty > 0) {
-        html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
-        html += renderInvLocations(inv, cp.name, cp.oem || '');
-        html += '</div></div>';
-    }
+    html += '</div>'; // end left column
 
-    html += '</div>'; // end left
-
-
-
-    html += '</div>'; // end left
-
-    // RIGHT COLUMN — What You Need, Notes, Installation History
+    // RIGHT COLUMN — What You Need, Stock Locations, Common Errors, Notes, Install History
     html += '<div>';
-    // What You Need box
+
+    // What You Need
     if (pd) {
         html += '<div class="ms-box"><div class="ms-box-title" style="background:#8B0000">🔧 What You Need</div><div class="ms-box-body">';
         if (pd.time) html += '<div class="ms-field"><span class="ms-field-label">Est. Time</span><span class="ms-field-val" style="color:var(--accent)">' + pd.time + '</span></div>';
@@ -242,7 +233,14 @@ async function renderPartProfile(arg) {
         html += '</div></div>';
     }
 
-    // Common Errors / Symptoms box
+    // Stock Locations
+    if (inv.length > 0 && totalQty > 0) {
+        html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
+        html += renderInvLocations(inv, cp.name, cp.oem || '');
+        html += '</div></div>';
+    }
+
+    // Common Errors / Symptoms
     if (commonErrors.length > 0) {
         html += '<div class="ms-box"><div class="ms-box-title" style="background:#5a4a0a">⚠️ Common Errors / Symptoms</div><div class="ms-box-body">';
         commonErrors.forEach(function (e) {
@@ -269,8 +267,11 @@ async function renderPartProfile(arg) {
         html += '</div></div>';
     }
 
-    html += '</div>'; // end right
+    html += '</div>'; // end right column
     html += '</div>'; // end grid
+
+    // Comments — full width below the grid
+    html += '<div style="margin-top:24px;padding:0 4px" id="comments-part-' + id + '"></div>';
 
     if (String(el.dataset.renderToken) !== String(myToken)) return;
     el.innerHTML = html;
