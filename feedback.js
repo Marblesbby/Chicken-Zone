@@ -490,7 +490,7 @@ async function renderFeedbackPage(){
     html += '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--warning)">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">';
     html += '<div class="stat-label" style="color:var(--warning)">&#x1F41B; Known Bugs'+(knownBugs.length>0?' ('+knownBugs.length+')':'')+'</div>';
-    if(_isAdmin){
+    if(_isAdmin && getEffectiveRole() === 'admin'){
       html += '<button class="btn btn-secondary btn-sm" onclick="addKnownBugManually()">+ Add Known Bug</button>';
     }
     html += '</div>';
@@ -534,9 +534,9 @@ async function renderFeedbackPage(){
     html += '</div>';
 
     // ── MY SUBMISSIONS / ALL SUBMISSIONS (admin only) ────────────────
-    var displayList = _isAdmin ? allFeedback : myFeedback;
+    var displayList = (_isAdmin && getEffectiveRole() === 'admin') ? allFeedback : myFeedback;
     if(displayList.length > 0){
-      if(_isAdmin){
+      if(_isAdmin && getEffectiveRole() === 'admin'){
         // Group by type with collapsible headers
         var types = ['Bug Report','New Feature','Improvement','UI / Visual','Performance'];
         types.forEach(function(t){
@@ -588,7 +588,7 @@ function renderKnownBug(b, isSquashed){
     html += '<div style="font-size:12px;color:var(--success);margin-top:6px;padding:6px;background:rgba(34,197,94,.1);border-radius:4px">&#x2705; '+esc(b.resolution_message)+'</div>';
   }
   html += '</div>';
-  if(_isAdmin){
+  if(_isAdmin && getEffectiveRole() === 'admin'){
     html += '<div style="display:flex;flex-direction:column;gap:4px">';
     html += '<button class="btn btn-ghost btn-sm" onclick="editKnownBug(\''+b.id+'\')">&#x270F;&#xFE0F; Edit</button>';
     if(!isSquashed){
@@ -695,7 +695,7 @@ function renderFeedbackEntry(f){
   if(f.is_published) html += '<div style="font-size:11px;color:var(--warning);margin-top:4px">&#x1F4E2; Published as known bug</div>';
 
   // Admin action bar
-  if(_isAdmin){
+  if(_isAdmin && getEffectiveRole() === 'admin'){
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
     html += '<button class="btn btn-secondary btn-sm" onclick="showFeedbackUpdateModal(\''+f.id+'\')">&#x270F;&#xFE0F; Update</button>';
     if(f.type==='Bug Report' && !f.is_published){
@@ -945,6 +945,28 @@ async function renderAnnouncementsCard(){
     });
   }catch(e){}
 
+  // Active known bugs — published but not yet resolved
+  var knownBugBanners = '';
+  try{
+    var kRes = await db.from('feedback').select('id,title,description,location')
+      .eq('is_published',true).eq('is_resolved',false).eq('type','Bug Report')
+      .order('created_at',{ascending:false});
+    (kRes.data||[]).forEach(function(b){
+      knownBugBanners += '<div class="alert" style="background:rgba(239,68,68,.07);border-color:rgba(239,68,68,.3);margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">';
+      knownBugBanners += '<span>\u{1F41B}</span>';
+      knownBugBanners += '<div style="flex:1;min-width:200px">';
+      knownBugBanners += '<strong style="cursor:pointer" onclick="showView(\'feedback\')">'+esc(b.title||'Known Bug')+'</strong>';
+      if(b.location) knownBugBanners += '<span style="font-size:11px;color:var(--text-muted);margin-left:8px">'+esc(b.location)+'</span>';
+      if(b.description) knownBugBanners += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">'+esc(b.description)+'</div>';
+      knownBugBanners += '<div style="font-size:11px;color:var(--danger);margin-top:4px;font-weight:600">We\'re aware and working on it.</div>';
+      knownBugBanners += '</div>';
+      if(_isAdmin && getEffectiveRole() === 'admin'){
+        knownBugBanners += '<button class="btn btn-ghost btn-sm" onclick="editKnownBug(\''+b.id+'\')">&#x270F;&#xFE0F;</button>';
+      }
+      knownBugBanners += '</div>';
+    });
+  }catch(e){}
+
   // Admin announcements targeted to user role
   var roleBanners = '';
   try{
@@ -964,14 +986,15 @@ async function renderAnnouncementsCard(){
       roleBanners += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px">'+fmtDate(a.created_at)+'</div>';
       roleBanners += '</div>';
       if(_isAdmin){
+        roleBanners += '<button class="btn btn-ghost btn-sm" onclick="editAnnouncement(\''+a.id+'\')">&#x270F;&#xFE0F;</button>';
         roleBanners += '<button class="btn btn-danger btn-sm" title="Delete permanently (cannot be undone)" onclick="deleteAnnouncement(\''+a.id+'\')">Del</button>';
       }
       roleBanners += '</div>';
     });
   }catch(e){}
 
-  if(bugBanners || roleBanners){
-    html += bugBanners + roleBanners;
+  if(bugBanners || knownBugBanners || roleBanners){
+    html += knownBugBanners + bugBanners + roleBanners;
   } else {
     html += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;padding:8px">No announcements right now.</div>';
   }
@@ -1043,6 +1066,50 @@ async function deleteAnnouncement(id){
   if(!confirm('Delete this announcement?')) return;
   await db.from('announcements').delete().eq('id', id);
   toast('Deleted','success');
+  if(_currentView === 'dashboard') await renderDashboard();
+}
+
+async function editAnnouncement(id){
+  var res = await db.from('announcements').select('*').eq('id',id).single();
+  var a = res.data; if(!a) return toast('Could not load announcement','error');
+  showModal('<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+    '<div class="modal" style="max-width:520px">' +
+    '<div class="modal-header"><div class="modal-title">Edit Announcement</div>' +
+    '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
+    '<div class="modal-body">' +
+    '<div class="form-group"><label>Visible to</label><select class="form-control" id="ann-target">' +
+    ['all','owner','tester','guest','viewer','admin'].map(function(r){
+      return '<option value="'+r+'"'+(a.target_role===r?' selected':'')+'>'+r.charAt(0).toUpperCase()+r.slice(1)+(r==='all'?' (Everyone)':'')+'</option>';
+    }).join('') + '</select></div>' +
+    '<div class="form-group"><label>Title</label><input type="text" class="form-control" id="ann-title" value="'+esc(a.title||'')+'"></div>' +
+    '<div class="form-group"><label>Message</label><textarea class="form-control" id="ann-body" rows="4">'+esc(a.body||'')+'</textarea></div>' +
+    (a.image_url ? '<div style="margin-bottom:8px"><img src="'+esc(a.image_url)+'" style="max-height:80px;border-radius:4px"> <span style="font-size:11px;color:var(--text-muted)">Current image</span></div>' : '') +
+    '<div class="form-group"><label>Replace Image (optional)</label><input type="file" class="form-control" id="ann-image" accept="image/*"></div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="saveAnnouncementEdit(\''+id+'\',\''+esc(a.image_url||'')+'\')">Save</button>' +
+    '</div></div></div>');
+}
+
+async function saveAnnouncementEdit(id, existingImageUrl){
+  var title = val('ann-title');
+  var body = val('ann-body');
+  if(!title && !body) return toast('Add a title or message','error');
+  var imageUrl = existingImageUrl || null;
+  var fileEl = document.getElementById('ann-image');
+  var file = fileEl && fileEl.files && fileEl.files[0];
+  if(file){
+    try{ imageUrl = await uploadFile('parts-images', file); }
+    catch(e){ toast('Image upload failed: '+e.message,'error'); return; }
+  }
+  var{error} = await db.from('announcements').update({
+    title: title||null, body: body||null,
+    image_url: imageUrl, target_role: val('ann-target')||'all'
+  }).eq('id', id);
+  if(error){ toast(error.message,'error'); return; }
+  toast('Announcement updated!','success');
+  closeModal();
   if(_currentView === 'dashboard') await renderDashboard();
 }
 
