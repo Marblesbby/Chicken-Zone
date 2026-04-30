@@ -218,6 +218,10 @@ async function renderPartProfile(arg) {
 
     html += '</div>'; // end left
 
+
+
+    html += '</div>'; // end left
+
     // RIGHT COLUMN — What You Need, Notes, Installation History
     html += '<div>';
     // What You Need box
@@ -271,11 +275,6 @@ async function renderPartProfile(arg) {
     if (String(el.dataset.renderToken) !== String(myToken)) return;
     el.innerHTML = html;
     renderComments('part', id, 'comments-part-' + id);
-=======
-  if(String(el.dataset.renderToken) !== String(myToken)) return;
-  el.innerHTML = html;
-  renderComments('part', id, 'comments-part-'+id);
->>>>>>> 7f6d53fda0a37f033e12fbcdc0b5f5ac699d5e7f
 }
 
 // Get display name for a vehicle from notes field (Driver: X format)
