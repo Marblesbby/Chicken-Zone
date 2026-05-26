@@ -82,6 +82,10 @@ tr:hover td{background:rgba(255,255,255,.025)}
 .badge-good{background:rgba(59,130,246,.15);color:var(--info)}
 .badge-fair{background:rgba(245,158,11,.15);color:var(--warning)}
 .badge-poor{background:rgba(239,68,68,.15);color:var(--danger)}
+.badge-original{background:rgba(107,33,168,.18);color:#c084fc;border:1px solid rgba(107,33,168,.4)}
+.badge-none{background:#0a0a0a;color:#666;border:1px solid #2a2a2a}
+.vehicle-card-scrap{border-color:rgba(239,68,68,.25)}
+.vehicle-card-scrap:hover{border-color:rgba(239,68,68,.5)}
 .badge-low{background:rgba(239,68,68,.15);color:var(--danger)}
 .badge-high{background:rgba(239,68,68,.15);color:var(--danger)}
 .badge-medium{background:rgba(245,158,11,.15);color:var(--warning)}
@@ -228,8 +232,8 @@ input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1) brightnes
 input[type="date"]::-webkit-calendar-picker-indicator:hover{opacity:1}
 
 /* ── VIEWER MODE — grey out action buttons, keep nav/feedback/profile ── */
-.viewer-mode .btn-primary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report):not(#view-profile *),
-.viewer-mode .btn-secondary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report):not(#view-profile *) {
+.viewer-mode .btn-primary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report),
+.viewer-mode .btn-secondary:not(.nav-item *):not(#feedback-nav *):not(#profile-nav *):not(.btn-bug-report) {
   opacity: 0.45;
   pointer-events: none;
   cursor: not-allowed;
