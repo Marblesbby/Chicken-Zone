@@ -151,8 +151,19 @@ function colorToCss(name) {
     };
     return map[n] || '#888';
 }
+var _vehicleOwnerCache = {}; // vehicleId → owner profile (name/avatar/color)
+
+function setVehicleOwnerCache(map) { _vehicleOwnerCache = map || {}; }
+
 function getVehicleDisplayName(v) {
     if (!v) return 'Unknown';
+    // Preferred: use the assigned owner if there is one
+    var owner = _vehicleOwnerCache[v.id];
+    if (owner) {
+        var name = owner.display_name || owner.username;
+        if (name) return name + "'s " + v.model;
+    }
+    // Legacy fallback: parse Driver: from notes
     var notes = v.notes || '';
     var m = notes.match(/Driver:\s*([^.,\n]+)/i);
     if (m) return m[1].trim() + "'s " + v.model;
