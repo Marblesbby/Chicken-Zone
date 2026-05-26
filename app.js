@@ -132,7 +132,7 @@ function closeModal() {
 
 // ─── BADGES AND DISPLAY HELPERS ──────────────────────────────────────────────────────────────
 function condBadge(c) {
-    var m = { 'New': 'badge-new', 'Used - Good': 'badge-good', 'Used - Fair': 'badge-fair', 'Used - Poor': 'badge-poor' };
+    var m = { 'New': 'badge-new', 'Used - Good': 'badge-good', 'Used - Fair': 'badge-fair', 'Used - Poor': 'badge-poor', 'Original': 'badge-original', 'None': 'badge-none' };
     return c ? '<span class="badge ' + (m[c] || '') + '">' + esc(c) + '</span>' : '<span style="color:var(--text-dim)">-</span>';
 }
 function prioBadge(p) {
@@ -569,12 +569,11 @@ async function signUp() {
     if (existing.data) return toast('That username is taken', 'error');
     // Check invite code if provided
     var assignedRole = 'viewer';
-    var usedCodeId = null;
-    var usedCodeUses = 0;
     if (invCode) {
+        // First check if code exists at all (regardless of active status)
         var existsRes = await db.from('invite_codes').select('*').ilike('code', invCode);
         if (existsRes.error) {
-            toast('Could not check invite code. Please try again.', 'error');
+            toast('Could not check invite code (database access issue). Please try again.', 'error');
             return;
         }
         if (!existsRes.data || existsRes.data.length === 0) {
@@ -583,41 +582,23 @@ async function signUp() {
         }
         var ic = existsRes.data[0];
         if (!ic.is_active) {
-            toast('This invite code has been deactivated. Ask an admin for a new one.', 'error');
+            toast('This invite code has been deactivated. Ask an admin for a new code.', 'error');
             return;
         }
         assignedRole = ic.role;
-        usedCodeId = ic.id;
-        usedCodeUses = ic.uses || 0;
+        await db.from('invite_codes').update({ uses: (ic.uses || 0) + 1 }).eq('id', ic.id);
     }
-    // Create auth user
     var r = await db.auth.signUp({ email: email, password: password, options: { data: { username: username, real_email: email } } });
     if (r.error) { toast(r.error.message, 'error'); return; }
-
-    // Sign in immediately so we have an authenticated session for the profile upsert
-    var signInRes = await db.auth.signInWithPassword({ email: email, password: password });
-    if (signInRes.error) {
-        // Signup worked but auto-signin failed — send them to login manually
-        toast('Account created! Please sign in.', 'success');
-        switchAuthTab('login');
-        document.getElementById('login-username').value = username;
-        return;
+    if (r.data && r.data.user) {
+        await db.from('profiles').upsert({
+            id: r.data.user.id, username: username, display_name: username,
+            full_name: username, real_email: email, role: assignedRole, user_color: '#FFD700', avatar_emoji: '🐇'
+        }).catch(function () { });
     }
-
-    // Now authenticated — upsert profile with the correct role
-    var { error: upsertErr } = await db.from('profiles').upsert({
-        id: signInRes.data.user.id, username: username, display_name: username,
-        full_name: username, real_email: email, role: assignedRole, user_color: '#FFD700', avatar_emoji: '🐇'
-    });
-    if (upsertErr) { console.error('Profile upsert failed:', upsertErr.message); }
-
-    // Increment invite code uses
-    if (usedCodeId) {
-        await db.from('invite_codes').update({ uses: usedCodeUses + 1 }).eq('id', usedCodeId);
-    }
-
-    // Auth state change will initialize the app automatically
-    toast('Welcome to Chicken Zone' + (assignedRole !== 'viewer' ? ' — role set to ' + assignedRole + '!' : '! Enter an invite code on your profile to unlock access.'), 'success');
+    toast('Account created! Sign in with your username.', 'success');
+    switchAuthTab('login');
+    document.getElementById('login-username').value = username;
 }
 
 function switchAuthTab(tab) {
