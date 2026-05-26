@@ -71,8 +71,8 @@ async function renderPartProfile(arg) {
     // Compatible vehicles - need to look them up from DB
     let vehiclesList = [];
     try {
-        const rv = await withTimeout(db.from('vehicles').select('id,year,make,model,trim,notes').order('year'));
-        vehiclesList = rv.data || [];
+        const rv = await withTimeout(db.from('vehicles').select('id,year,make,model,trim,notes,is_scrap').order('year'));
+        vehiclesList = (rv.data || []).filter(function (v) { return !v.is_scrap; });
     } catch (e) { vehiclesList = []; }
 
     // Determine which actual vehicles are compatible
@@ -156,32 +156,34 @@ async function renderPartProfile(arg) {
     html += '</div>';
     html += '</div></div>';
 
-    // Two column body — scrollable if content overflows
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 4px;max-height:calc(100vh - 320px);overflow-y:auto">';
+    // Two column body
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:0 4px">';
 
-    // LEFT COLUMN — Inventory Details, Part Numbers
+    // LEFT COLUMN — Inventory Details, Part Numbers, Stock Locations
     html += '<div>';
-
-    // Inventory Details (always shown)
-    html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
-    html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:' + (totalQty > 0 ? 'var(--accent)' : 'var(--text-dim)') + '">' + totalQty + '</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">' + (totalQty === 0 ? '<span style="color:var(--text-dim);font-size:12px">None</span>' : condBadge(topInv?.condition)) + '</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">' + (topInv?.source ? esc(topInv.source) : '-') + '</span></div>';
-    html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">' + (topInv?.date_acquired ? fmtDate(topInv.date_acquired) : '-') + '</span></div>';
-    if (topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$' + topInv.price_paid + '</span></div>';
-    if (topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">' + esc(topInv.sourced_from_vehicle) + '</span></div>';
-    html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
-    if (totalQty === 0) {
-        html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\'' + cp.id + '\')">+ Add to Inventory</button>';
-        html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
-    } else {
+    if (inv.length > 0 && totalQty > 0) {
+        html += '<div class="ms-box"><div class="ms-box-title">Inventory Details</div><div class="ms-box-body">';
+        html += '<div class="ms-field"><span class="ms-field-label">Quantity</span><span class="ms-field-val" style="font-size:24px;font-family:\'Bebas Neue\',sans-serif;color:var(--accent)">' + totalQty + '</span></div>';
+        html += '<div class="ms-field"><span class="ms-field-label">Condition</span><span class="ms-field-val">' + condBadge(topInv?.condition) + '</span></div>';
+        html += '<div class="ms-field"><span class="ms-field-label">Source</span><span class="ms-field-val">' + esc(topInv?.source || '-') + '</span></div>';
+        html += '<div class="ms-field"><span class="ms-field-label">Date Acquired</span><span class="ms-field-val">' + (topInv?.date_acquired ? fmtDate(topInv.date_acquired) : '-') + '</span></div>';
+        if (topInv?.price_paid) html += '<div class="ms-field"><span class="ms-field-label">Paid</span><span class="ms-field-val" style="color:var(--success)">$' + topInv.price_paid + '</span></div>';
+        if (topInv?.sourced_from_vehicle) html += '<div class="ms-field"><span class="ms-field-label">Intended For</span><span class="ms-field-val">' + esc(topInv.sourced_from_vehicle) + '</span></div>';
+        html += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
         if (topInv?.receipt_url) html += '<a href="' + topInv.receipt_url + '" target="_blank" class="btn btn-secondary btn-sm">📄 Receipt</a>';
         html += '<button class="btn btn-secondary btn-sm" onclick="showEditInventoryModal(\'' + (topInv?.id || '') + '\',\'' + cp.id + '\')">✏️ Edit</button>';
         if (topInv?.condition === 'Used - Poor') {
             html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist a replacement</button>';
         }
+        html += '</div></div></div>';
+    } else {
+        html += '<div class="ms-box"><div class="ms-box-title">Not In Stock</div><div class="ms-box-body">';
+        html += '<div style="color:var(--text-muted);font-size:13px;margin-bottom:12px">This part is not currently in your inventory.</div>';
+        html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+        html += '<button class="btn btn-primary btn-sm" onclick="showAddSpecificPart(\'' + cp.id + '\')">+ Add to Inventory</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="wishlistCurrent()">⭐ Wishlist</button>';
+        html += '</div></div></div>';
     }
-    html += '</div></div></div>';
 
     // Part Numbers box
     html += '<div class="ms-box"><div class="ms-box-title">Part Numbers</div><div class="ms-box-body">';
@@ -192,7 +194,7 @@ async function renderPartProfile(arg) {
     if (!cp.oem) html += '<div style="color:var(--text-dim);font-size:12px">No OEM # on file</div>';
     html += '</div></div>';
 
-    // Compatible Vehicles
+    // Compatible Vehicles - clickable to specific cars
     html += '<div class="ms-box"><div class="ms-box-title">Compatible Vehicles</div><div class="ms-box-body">';
     if (compatVehicles.length > 0) {
         compatVehicles.forEach(function (v) {
@@ -200,18 +202,29 @@ async function renderPartProfile(arg) {
             html += '<span class="compat-tag" style="cursor:pointer" onclick="startInstallForVehicle(\'' + v.id + '\',\'' + cp.id + '\')" title="Install a ' + esc(cp.name) + ' on this vehicle">🚗 ' + esc(vName) + '</span>';
         });
     } else {
+        // Fallback when no DB vehicles exist yet
         if (cp.fits === 'all') html += '<span class="compat-tag">🚗 All three cars</span>';
         else if (cp.fits === 'esc') html += '<span class="compat-tag">🚗 Jessie\'s Escalade</span>';
         else if (cp.fits === 'yk') html += '<span class="compat-tag">🚗 Both Denalis</span>';
     }
     html += '</div></div>';
 
-    html += '</div>'; // end left column
+    // Stock locations - hide when all stock is depleted
+    if (inv.length > 0 && totalQty > 0) {
+        html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
+        html += renderInvLocations(inv, cp.name, cp.oem || '');
+        html += '</div></div>';
+    }
 
-    // RIGHT COLUMN — What You Need, Stock Locations, Common Errors, Notes, Install History
+    html += '</div>'; // end left
+
+
+
+    html += '</div>'; // end left
+
+    // RIGHT COLUMN — What You Need, Notes, Installation History
     html += '<div>';
-
-    // What You Need
+    // What You Need box
     if (pd) {
         html += '<div class="ms-box"><div class="ms-box-title" style="background:#8B0000">🔧 What You Need</div><div class="ms-box-body">';
         if (pd.time) html += '<div class="ms-field"><span class="ms-field-label">Est. Time</span><span class="ms-field-val" style="color:var(--accent)">' + pd.time + '</span></div>';
@@ -229,14 +242,7 @@ async function renderPartProfile(arg) {
         html += '</div></div>';
     }
 
-    // Stock Locations
-    if (inv.length > 0 && totalQty > 0) {
-        html += '<div class="ms-box"><div class="ms-box-title">Stock Locations</div><div class="ms-box-body">';
-        html += renderInvLocations(inv, cp.name, cp.oem || '');
-        html += '</div></div>';
-    }
-
-    // Common Errors / Symptoms
+    // Common Errors / Symptoms box
     if (commonErrors.length > 0) {
         html += '<div class="ms-box"><div class="ms-box-title" style="background:#5a4a0a">⚠️ Common Errors / Symptoms</div><div class="ms-box-body">';
         commonErrors.forEach(function (e) {
@@ -263,11 +269,8 @@ async function renderPartProfile(arg) {
         html += '</div></div>';
     }
 
-    html += '</div>'; // end right column
+    html += '</div>'; // end right
     html += '</div>'; // end grid
-
-    // Comments — full width below the grid, matching vehicle profile style
-    html += '<div class="card" style="margin-top:24px;padding:0 4px"><div class="stat-label" style="margin-bottom:10px">💬 Comments</div><div id="comments-part-' + id + '"></div></div>';
 
     if (String(el.dataset.renderToken) !== String(myToken)) return;
     el.innerHTML = html;
