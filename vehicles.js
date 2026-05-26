@@ -1029,6 +1029,7 @@ async function saveHistoricalInstall(vehicleId) {
         var existing = existingRes.data || [];
 
         var added = 0, skipped = 0, history = 0;
+        var firstError = null;
         for (var ci = 0; ci < _catalog.length; ci++) {
             var cp = _catalog[ci];
             // Look at existing installs for this catalog part on this vehicle
@@ -1044,7 +1045,12 @@ async function saveHistoricalInstall(vehicleId) {
                 part_number: cp.oem || null, condition: 'Original',
                 quantity: 0, source: 'Original', is_historical: true
             }).select().single();
-            if (pr.error) { skipped++; continue; }
+            if (pr.error) {
+                if (!firstError) firstError = pr.error.message;
+                console.error('Parts insert failed for', cp.name, pr.error);
+                skipped++;
+                continue;
+            }
 
             var installRow = {
                 part_id: pr.data.id,
@@ -1062,7 +1068,6 @@ async function saveHistoricalInstall(vehicleId) {
                 installRow.removal_reason = 'Replaced';
                 history++;
             } else if (activeMatch) {
-                // Active install exists but no usable date comparison — add Original as removed immediately
                 installRow.removed_date = activeMatch.installed_date || new Date().toISOString().split('T')[0];
                 installRow.removal_reason = 'Replaced';
                 history++;
@@ -1070,10 +1075,19 @@ async function saveHistoricalInstall(vehicleId) {
                 added++;
             }
 
-            await db.from('part_installations').insert(installRow);
+            var ir = await db.from('part_installations').insert(installRow);
+            if (ir.error) {
+                if (!firstError) firstError = ir.error.message;
+                console.error('Install insert failed for', cp.name, ir.error);
+                skipped++;
+            }
         }
 
-        toast('🟣 Added ' + added + ' Original install' + (added !== 1 ? 's' : '') + (history > 0 ? ' (' + history + ' as history)' : ''), 'success');
+        if (firstError) {
+            toast('Failed: ' + firstError + ' (check console)', 'error');
+        } else {
+            toast('🟣 Added ' + added + ' Original install' + (added !== 1 ? 's' : '') + (history > 0 ? ' (' + history + ' as history)' : '') + (skipped > 0 ? ' · ' + skipped + ' skipped' : ''), 'success');
+        }
         invalidate();
         closeModal();
         setTimeout(async function () { if (_currentVehicleProfile.id) await refreshVehicleView(); }, 200);
