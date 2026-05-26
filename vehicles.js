@@ -15,57 +15,98 @@ async function renderVehicles() {
     el.dataset.renderToken = myToken;
     let vehicles = [];
     let ownerProfiles = [];
+    let installCounts = {}; // vehicleId → {total, active}
     try {
         if (!_session.vehicles) el.innerHTML = viewLoading('Loading vehicles...');
         [vehicles] = await Promise.all([getVehicles()]);
         // Fetch owner assignments
         var opRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id', 'is', null);
         ownerProfiles = opRes.data || [];
+        // Fetch install counts for scrap-vehicle remaining-parts %
+        var scrapIds = vehicles.filter(function (v) { return v.is_scrap; }).map(function (v) { return v.id; });
+        if (scrapIds.length > 0) {
+            var icRes = await db.from('part_installations').select('vehicle_id,removed_date').in('vehicle_id', scrapIds);
+            (icRes.data || []).forEach(function (i) {
+                if (!installCounts[i.vehicle_id]) installCounts[i.vehicle_id] = { total: 0, active: 0 };
+                installCounts[i.vehicle_id].total++;
+                if (!i.removed_date) installCounts[i.vehicle_id].active++;
+            });
+        }
     } catch (err) {
         el.innerHTML = errBox(err.message, err.stack);
         console.error(err);
         return;
     }
 
+    var active = (vehicles || []).filter(function (v) { return !v.is_scrap; });
+    var scrap = (vehicles || []).filter(function (v) { return v.is_scrap; });
+
     let html = '';
     html = maybeShowTesterBanner() + html;
     html += '<div class="page-header"><div><div class="page-title">Vehicles</div><div class="page-subtitle">Car Profiles</div></div>';
     html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
     html += '<button class="btn btn-primary" onclick="showVehicleModal()">+ New Vehicle</button>';
+    html += '<button class="btn btn-primary" style="background:#1e4db7;border-color:#1e4db7" onclick="showVehicleModal(null,true)">+ Scrap Vehicle</button>';
     html += '<button class="btn btn-secondary" onclick="toast(\'Guest car feature coming soon!\',\'info\')">+ Guest</button>';
     html += '</div></div>';
 
-    if (!vehicles || vehicles.length === 0) {
+    function renderCard(v, isScrap) {
+        const driverName = getVehicleDisplayName(v);
+        const subtitle = [v.make, v.model, v.trim].filter(Boolean).join(' ').replace(/\s+AWD$/, '');
+        var counts = installCounts[v.id] || { total: 0, active: 0 };
+        var remainPct = counts.total > 0 ? Math.round((counts.active / counts.total) * 100) : 0;
+        var card = '<div class="vehicle-card' + (isScrap ? ' vehicle-card-scrap' : '') + '" style="position:relative" onclick="showView(\'vehicle-profile\',{id:\'' + v.id + '\'})">';
+        card += '<div class="vehicle-year-bg" style="' + (isScrap ? 'color:rgba(239,68,68,.18)' : '') + '">' + v.year + '</div>';
+        card += '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:22px;font-weight:700;text-transform:uppercase;color:var(--text)">' + esc(driverName) + '</div>';
+        card += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;display:flex;align-items:center;gap:8px">' + esc(subtitle);
+        if (v.color) card += '<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:' + colorToCss(v.color) + ';border:1px solid rgba(255,255,255,.2);flex-shrink:0" title="' + esc(v.color) + '"></span>';
+        card += '</div>';
+        if (isScrap) {
+            // Parts remaining instead of mileage
+            var color = remainPct > 66 ? 'var(--success)' : remainPct > 33 ? 'var(--warning)' : 'var(--danger)';
+            card += '<div style="font-size:13px;color:var(--text-muted)">🔩 <span style="color:' + color + ';font-weight:600">' + counts.active + '/' + counts.total + '</span> parts remaining (' + remainPct + '%)</div>';
+        } else {
+            card += '<div style="font-size:13px;color:var(--text-muted)">🛣 <span style="color:var(--text);font-weight:600">' + (v.current_mileage || 0).toLocaleString() + '</span> miles</div>';
+        }
+        if (v.vin) card += '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">VIN: ' + esc(v.vin) + '</div>';
+        var vOwner = ownerProfiles.find(function (op) { return op.assigned_vehicle_id === v.id; });
+        if (vOwner && !isScrap) {
+            card += '<div style="position:absolute;bottom:12px;right:12px;display:flex;align-items:center;gap:4px;font-size:12px;color:' + (vOwner.user_color || '#FFD700') + '">';
+            card += (vOwner.avatar_emoji || '🐇') + ' ' + esc(vOwner.display_name || vOwner.username || 'Owner');
+            card += '</div>';
+        }
+        card += '<div class="flex-row no-print" style="margin-top:14px;flex-wrap:wrap;gap:6px" onclick="event.stopPropagation()">';
+        if (isScrap) {
+            card += '<span style="font-size:11px;color:var(--text-dim);padding:6px 0">🪓 Junkyard</span>';
+        } else {
+            card += '<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\'' + v.id + '\')">🛣 Log Miles</button>';
+            card += '<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\'' + v.id + '\')">🖨️</button>';
+        }
+        card += '</div>';
+        card += '</div>';
+        return card;
+    }
+
+    if (active.length === 0 && scrap.length === 0) {
         html += '<div class="empty-state"><div class="empty-icon">🚗</div><p>No vehicles yet</p></div>';
     } else {
-        html += '<div class="vehicle-grid">';
-        vehicles.forEach(function (v) {
-            const driverName = getVehicleDisplayName(v);
-            const subtitle = [v.make, v.model, v.trim].filter(Boolean).join(' ').replace(/\s+AWD$/, '');
-            html += '<div class="vehicle-card" style="position:relative" onclick="showView(\'vehicle-profile\',{id:\'' + v.id + '\'})">';
-            html += '<div class="vehicle-year-bg">' + v.year + '</div>';
-            html += '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:22px;font-weight:700;text-transform:uppercase;color:var(--text)">' + esc(driverName) + '</div>';
-            html += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;display:flex;align-items:center;gap:8px">' + esc(subtitle);
-            if (v.color) html += '<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:' + colorToCss(v.color) + ';border:1px solid rgba(255,255,255,.2);flex-shrink:0" title="' + esc(v.color) + '"></span>';
+        // Active vehicles
+        if (active.length > 0) {
+            html += '<div class="vehicle-grid">';
+            active.forEach(function (v) { html += renderCard(v, false); });
             html += '</div>';
-            html += '<div style="font-size:13px;color:var(--text-muted)">🛣 <span style="color:var(--text);font-weight:600">' + (v.current_mileage || 0).toLocaleString() + '</span> miles</div>';
-            if (v.vin) html += '<div style="font-size:11px;color:var(--text-dim);margin-top:4px">VIN: ' + esc(v.vin) + '</div>';
-            // Find owner for this vehicle
-            var vOwner = ownerProfiles.find(function (op) { return op.assigned_vehicle_id === v.id; });
-            if (vOwner) {
-                html += '<div style="position:absolute;bottom:12px;right:12px;display:flex;align-items:center;gap:4px;font-size:12px;color:' + (vOwner.user_color || '#FFD700') + '">';
-                html += (vOwner.avatar_emoji || '🐇') + ' ' + esc(vOwner.display_name || vOwner.username || 'Owner');
-                html += '</div>';
-            }
-            html += '<div class="flex-row no-print" style="margin-top:14px;flex-wrap:wrap;gap:6px" onclick="event.stopPropagation()">';
-            html += '<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\'' + v.id + '\')">🛣 Log Miles</button>';
-            html += '<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\'' + v.id + '\')">🖨️</button>';
-            html += '</div>';
-            html += '</div>';
-        });
-        html += '</div>';
+        }
+        // Junkyard
+        if (scrap.length > 0) {
+            html += '<div style="margin-top:32px;padding-top:20px;border-top:2px solid var(--border)">';
+            html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><div style="font-family:\'Bebas Neue\',sans-serif;font-size:28px;letter-spacing:2px;color:var(--danger)">🪓 Junkyard</div>';
+            html += '<div style="font-size:12px;color:var(--text-muted)">' + scrap.length + ' parts vehicle' + (scrap.length !== 1 ? 's' : '') + '</div></div>';
+            html += '<div class="vehicle-grid">';
+            scrap.forEach(function (v) { html += renderCard(v, true); });
+            html += '</div></div>';
+        }
     }
-    if (String(el.dataset.renderToken) !== String(myToken)) return; // navigated away, discard stale render
+    if (String(el.dataset.renderToken) !== String(myToken)) return;
     el.innerHTML = html;
 }
 
@@ -159,20 +200,38 @@ async function renderVehicleProfile(arg) {
     let html = '';
 
     // Hero header matching the list card style
-    html += '<div style="background:linear-gradient(135deg,#0a0a1a 0%,#151525 100%);margin:-32px -32px 24px -32px;padding:28px 32px;border-bottom:2px solid var(--accent);position:relative;overflow:hidden">';
+    var isScrap = !!v.is_scrap;
+    var totalInstalls = installs.length;
+    var activeInstalls = installs.filter(function (i) { return !i.removed_date; }).length;
+    var remainPct = totalInstalls > 0 ? Math.round((activeInstalls / totalInstalls) * 100) : 0;
+    var yearColor = isScrap ? 'var(--danger)' : 'var(--accent)';
+
+    html += '<div style="background:linear-gradient(135deg,#0a0a1a 0%,#151525 100%);margin:-32px -32px 24px -32px;padding:28px 32px;border-bottom:2px solid ' + (isScrap ? 'var(--danger)' : 'var(--accent)') + ';position:relative;overflow:hidden">';
     html += '<button class="btn btn-ghost btn-sm" onclick="showView(\'vehicles\')" style="margin-bottom:12px">← Back to Vehicles</button>';
-    html += '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:120px;color:var(--accent);line-height:1;opacity:.15;position:absolute;right:24px;top:30px">' + v.year + '</div>';
+    html += '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:120px;color:' + yearColor + ';line-height:1;opacity:.15;position:absolute;right:24px;top:30px">' + v.year + '</div>';
     html += '<div style="position:relative">';
+    if (isScrap) html += '<div style="display:inline-block;background:var(--danger);color:#fff;font-family:\'Barlow Condensed\',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:3px 10px;border-radius:3px;margin-bottom:8px">🪓 Junkyard</div>';
     html += '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:40px;font-weight:700;text-transform:uppercase;color:var(--text);line-height:1">' + esc(driverName) + '</div>';
     html += '<div style="color:var(--text-muted);font-size:14px;margin-top:4px;display:flex;align-items:center;gap:10px">' + esc(subtitle);
     if (v.color) html += '<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:' + colorToCss(v.color) + ';border:1px solid rgba(255,255,255,.2)" title="' + esc(v.color) + '"></span>';
     html += '</div>';
-    html += '<div style="color:var(--text-muted);font-size:13px;margin-top:12px">🛣 <strong style="color:var(--text)">' + (v.current_mileage || 0).toLocaleString() + '</strong> miles' + (v.vin ? ' · VIN: ' + esc(v.vin) : '') + '</div>';
+    if (isScrap) {
+        var pctColor = remainPct > 66 ? 'var(--success)' : remainPct > 33 ? 'var(--warning)' : 'var(--danger)';
+        html += '<div style="color:var(--text-muted);font-size:13px;margin-top:12px">🔩 <strong style="color:' + pctColor + '">' + activeInstalls + '/' + totalInstalls + '</strong> parts remaining (<strong style="color:' + pctColor + '">' + remainPct + '%</strong>)' + (v.vin ? ' · VIN: ' + esc(v.vin) : '') + '</div>';
+    } else {
+        html += '<div style="color:var(--text-muted);font-size:13px;margin-top:12px">🛣 <strong style="color:var(--text)">' + (v.current_mileage || 0).toLocaleString() + '</strong> miles' + (v.vin ? ' · VIN: ' + esc(v.vin) : '') + '</div>';
+    }
     html += '<div class="flex-row no-print" style="flex-wrap:wrap;gap:6px;margin-top:16px">';
-    html += '<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\'' + id + '\')">🛣 Log Miles</button>';
-    html += '<button class="btn btn-secondary btn-sm" onclick="showVehicleModal(\'' + id + '\')">✏️ Edit</button>';
-    html += '<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\'' + id + '\')">🖨️ Print</button>';
-    html += '<button class="btn btn-secondary btn-sm" onclick="toast(\'Sell feature coming soon\',\'info\')" title="Sell vehicle (coming soon)">💰 Sell</button>';
+    if (isScrap) {
+        html += '<button class="btn btn-secondary btn-sm" onclick="showVehicleModal(\'' + id + '\')">✏️ Edit</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="restoreVehicle(\'' + id + '\')" title="Move out of Junkyard back to active vehicles">↩️ Restore</button>';
+    } else {
+        html += '<button class="btn btn-secondary btn-sm" onclick="showLogMileageModal(\'' + id + '\')">🛣 Log Miles</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="showVehicleModal(\'' + id + '\')">✏️ Edit</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="printVehicleProfile(\'' + id + '\')">🖨️ Print</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="toast(\'Sell feature coming soon\',\'info\')" title="Sell vehicle (coming soon)">💰 Sell</button>';
+        html += '<button class="btn btn-secondary btn-sm" onclick="scrapVehicle(\'' + id + '\')" title="Move this vehicle to the Junkyard as a parts source">🪓 Scrap</button>';
+    }
     html += '</div></div></div>';
 
     // Due reminders banner
@@ -741,10 +800,10 @@ async function saveVehicleDoc(vehicleId, docType, docId) {
 
 
 
-async function showVehicleModal(id = null) { let v = null; if (id) { const { data } = await db.from('vehicles').select('*').eq('id', id).single(); v = data } showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${v ? 'Edit Vehicle' : 'Add Vehicle'}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body"><div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year || ''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make || '')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model || '')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim || '')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color || '')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage || ''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin || '')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style === 'city' ? 'selected' : ''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style === 'mixed' ? 'selected' : ''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style === 'highway' ? 'selected' : ''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style === 'weekend' ? 'selected' : ''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style === 'worktruck' ? 'selected' : ''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Preferred Historical Date</label><input type="date" class="form-control" id="v-histdate" value="${v?.preferred_historical_date || ''}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used as default when adding historical part installs (parts installed before you started using Chicken Zone)</div></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes || '')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v ? `'${v.id}'` : 'null'})">${v ? 'Save' : 'Add Vehicle'}</button></div></div></div>`); }
+async function showVehicleModal(id = null, asScrap = false) { let v = null; if (id) { const { data } = await db.from('vehicles').select('*').eq('id', id).single(); v = data } var titleLabel = v ? 'Edit Vehicle' : (asScrap ? 'Add Scrap Vehicle' : 'Add Vehicle'); var btnLabel = v ? 'Save' : (asScrap ? 'Add to Junkyard' : 'Add Vehicle'); var scrapNotice = (!v && asScrap) ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;padding:10px;background:rgba(239,68,68,.07);border-left:3px solid var(--danger);border-radius:0 6px 6px 0;line-height:1.5">🪓 Adding a Scrap Vehicle — this will go directly to the Junkyard as a parts source. Mileage and VIN are optional.</div>' : ''; showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${titleLabel}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body">${scrapNotice}<div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year || ''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make || '')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model || '')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim || '')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color || '')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage || ''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin || '')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style === 'city' ? 'selected' : ''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style === 'mixed' ? 'selected' : ''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style === 'highway' ? 'selected' : ''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style === 'weekend' ? 'selected' : ''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style === 'worktruck' ? 'selected' : ''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Preferred Historical Date</label><input type="date" class="form-control" id="v-histdate" value="${v?.preferred_historical_date || ''}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used as default when adding historical part installs (parts installed before you started using Chicken Zone)</div></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes || '')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v ? `'${v.id}'` : 'null'}, ${asScrap ? 'true' : 'false'})">${btnLabel}</button></div></div></div>`); }
 
-async function saveVehicle(id) {
-    const year = parseInt(document.getElementById('v-year').value); const make = val('v-make'), model = val('v-model'); if (!year || !make || !model) return toast('Year, make, and model are required', 'error'); const data = { year, make, model, trim: val('v-trim') || null, color: val('v-color') || null, current_mileage: parseInt(document.getElementById('v-miles').value) || 0, vin: val('v-vin') || null, notes: val('v-notes') || null, commute_style: val('v-commute') || null, preferred_historical_date: val('v-histdate') || null }; let error; if (id) { ({ error } = await db.from('vehicles').update(data).eq('id', id)) } else { data.created_by = currentUser.id; ({ error } = await db.from('vehicles').insert(data)) } if (error) { toast(error.message, 'error'); return } if (!id) {
+async function saveVehicle(id, asScrap) {
+    const year = parseInt(document.getElementById('v-year').value); const make = val('v-make'), model = val('v-model'); if (!year || !make || !model) return toast('Year, make, and model are required', 'error'); const data = { year, make, model, trim: val('v-trim') || null, color: val('v-color') || null, current_mileage: parseInt(document.getElementById('v-miles').value) || 0, vin: val('v-vin') || null, notes: val('v-notes') || null, commute_style: val('v-commute') || null, preferred_historical_date: val('v-histdate') || null }; if (!id && asScrap) data.is_scrap = true; let error; if (id) { ({ error } = await db.from('vehicles').update(data).eq('id', id)) } else { data.created_by = currentUser.id; ({ error } = await db.from('vehicles').insert(data)) } if (error) { toast(error.message, 'error'); return } if (!id) {
         // Get the new vehicle ID
         var { data: newV } = await db.from('vehicles').select('id').order('created_at', { ascending: false }).limit(1).single();
         if (newV) {
@@ -775,6 +834,8 @@ async function deleteServiceRecord(id) { if (!confirm('Delete this record?')) re
 
 async function showInstallPartModal(invId, cpId, partName, condition, location) {
     var compatVehicles = await getVehicles();
+    // Always exclude scrap vehicles from install destinations
+    compatVehicles = compatVehicles.filter(function (v) { return !v.is_scrap; });
     if (cpId) {
         var cp = _catalog.find(function (p) { return p.id === cpId; });
         if (cp && cp.fits !== 'all') {
@@ -804,6 +865,28 @@ function saveInstallFromModal() {
 }
 
 
+// ─── SCRAP / JUNKYARD ────────────────────────────────────────────────────────
+async function scrapVehicle(vehicleId) {
+    if (!confirm('Move this vehicle to the Junkyard?\n\nIt will become a parts source. You can still uninstall parts, view history, and restore later if needed. Ownership assignment will be cleared.')) return;
+    var { error } = await db.from('vehicles').update({ is_scrap: true }).eq('id', vehicleId);
+    if (error) { toast(error.message, 'error'); return; }
+    // Clear ownership
+    await db.from('profiles').update({ assigned_vehicle_id: null }).eq('assigned_vehicle_id', vehicleId);
+    invalidate();
+    toast('Moved to Junkyard 🪓', 'success');
+    await refreshVehicleView();
+}
+
+async function restoreVehicle(vehicleId) {
+    if (!confirm('Restore this vehicle out of the Junkyard back to active vehicles?')) return;
+    var { error } = await db.from('vehicles').update({ is_scrap: false }).eq('id', vehicleId);
+    if (error) { toast(error.message, 'error'); return; }
+    invalidate();
+    toast('Restored to active vehicles', 'success');
+    await refreshVehicleView();
+}
+
+
 // ─── HISTORICAL PART INSTALL ──────────────────────────────────────────────────────────────────
 // Lets users record parts that were installed before they started using the app,
 // or parts they had on hand when installing. Creates install record only — no inventory entry.
@@ -813,9 +896,10 @@ async function showHistoricalInstallModal(vehicleId) {
     var vRes = await db.from('vehicles').select('preferred_historical_date').eq('id', vehicleId).single();
     var defaultDate = (vRes.data && vRes.data.preferred_historical_date) || '';
 
-    // Build category list from catalog
+    // Build category list from catalog with Original at top
     var cats = getCategories();
     var catOpts = '<option value="">Select a category...</option>';
+    catOpts += '<option value="__original__">🟣 Original — bulk add all catalog parts</option>';
     cats.forEach(function (c) {
         catOpts += '<option value="' + esc(c) + '">' + esc(c) + '</option>';
     });
@@ -825,20 +909,26 @@ async function showHistoricalInstallModal(vehicleId) {
         '<div class="modal-header"><div class="modal-title">+ Historical Install</div>' +
         '<button class="close-btn" onclick="closeModal()">&times;</button></div>' +
         '<div class="modal-body">' +
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">For parts that were installed before you started using Chicken Zone, or parts you already had on hand. This won\'t add to inventory — just records the install.</div>' +
+        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">For parts installed before you started using Chicken Zone, or parts you already had on hand. This won\'t add to inventory — just records the install.</div>' +
 
         '<div class="form-group"><label>Part Type</label>' +
         '<select class="form-control" id="hi-cat" onchange="updateHistoricalPartList()">' + catOpts + '</select></div>' +
 
+        '<div id="hi-original-info" style="display:none;font-size:12px;color:var(--text-muted);margin-bottom:12px;padding:10px;background:rgba(107,33,168,.08);border-left:3px solid #6b21a8;border-radius:0 6px 6px 0;line-height:1.5">' +
+        '🟣 <strong>Original Bulk Add</strong> — fills in the entire GMT800 catalog as "Original" condition installs using the date and mileage below. Parts with an existing active install will have the Original record added to history (marked removed on the date of the newer install). Use this once when you first add a vehicle.' +
+        '</div>' +
+
+        '<div id="hi-part-fields">' +
         '<div class="form-group"><label>Part Name</label>' +
         '<select class="form-control" id="hi-part" onchange="updateHistoricalOEM()" disabled>' +
         '<option value="">Select a category first...</option></select></div>' +
 
         '<div class="form-group"><label>OEM Part Number</label>' +
         '<input type="text" class="form-control" id="hi-oem" placeholder="(auto-filled when part selected)" readonly></div>' +
+        '</div>' +
 
         '<div class="grid-2">' +
-        '<div class="form-group"><label>Condition</label>' +
+        '<div class="form-group" id="hi-cond-wrap"><label>Condition</label>' +
         '<select class="form-control" id="hi-cond">' +
         '<option value="New" selected>New</option>' +
         '<option value="Used - Good">Used - Good</option>' +
@@ -865,7 +955,7 @@ async function showHistoricalInstallModal(vehicleId) {
         '</div>' +
         '<div class="modal-footer">' +
         '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-        '<button class="btn btn-primary" onclick="saveHistoricalInstall(\'' + vehicleId + '\')">Save</button>' +
+        '<button class="btn btn-primary" id="hi-save-btn" onclick="saveHistoricalInstall(\'' + vehicleId + '\')">Save</button>' +
         '</div></div></div>';
 
     showModal(modal);
@@ -874,6 +964,24 @@ async function showHistoricalInstallModal(vehicleId) {
 function updateHistoricalPartList() {
     var cat = val('hi-cat');
     var sel = document.getElementById('hi-part');
+    var partFields = document.getElementById('hi-part-fields');
+    var origInfo = document.getElementById('hi-original-info');
+    var condWrap = document.getElementById('hi-cond-wrap');
+    var saveBtn = document.getElementById('hi-save-btn');
+
+    if (cat === '__original__') {
+        // Bulk Original mode
+        if (partFields) partFields.style.display = 'none';
+        if (origInfo) origInfo.style.display = 'block';
+        if (condWrap) condWrap.style.display = 'none';
+        if (saveBtn) saveBtn.textContent = '🟣 Bulk Add Original';
+        return;
+    }
+    if (partFields) partFields.style.display = 'block';
+    if (origInfo) origInfo.style.display = 'none';
+    if (condWrap) condWrap.style.display = 'block';
+    if (saveBtn) saveBtn.textContent = 'Save';
+
     if (!sel) return;
     if (!cat) {
         sel.innerHTML = '<option value="">Select a category first...</option>';
@@ -902,6 +1010,77 @@ function updateHistoricalOEM() {
 }
 
 async function saveHistoricalInstall(vehicleId) {
+    var noDate = document.getElementById('hi-no-date') && document.getElementById('hi-no-date').checked;
+    var dateInstalled = noDate ? null : (val('hi-date') || null);
+    var miles = parseInt(document.getElementById('hi-miles').value) || null;
+    var notes = val('hi-notes') || null;
+    var cat = val('hi-cat');
+
+    if (cat === '__original__') {
+        // ── BULK ORIGINAL ADD ────────────────────────────────────────────
+        if (!dateInstalled && !noDate) return toast('Pick a date or check "I don\'t know"', 'error');
+        var saveBtn = document.getElementById('hi-save-btn');
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Adding...'; }
+
+        // Fetch existing installs on this vehicle so we can avoid stomping real history
+        var existingRes = await db.from('part_installations')
+            .select('id,installed_date,removed_date,parts(catalog_part_id)')
+            .eq('vehicle_id', vehicleId);
+        var existing = existingRes.data || [];
+
+        var added = 0, skipped = 0, history = 0;
+        for (var ci = 0; ci < _catalog.length; ci++) {
+            var cp = _catalog[ci];
+            // Look at existing installs for this catalog part on this vehicle
+            var matches = existing.filter(function (e) {
+                return e.parts && e.parts.catalog_part_id === cp.id;
+            });
+            // Find the active (no removed_date) one
+            var activeMatch = matches.find(function (m) { return !m.removed_date; });
+
+            // Create the historical part row
+            var pr = await db.from('parts').insert({
+                name: cp.name, catalog_part_id: cp.id,
+                part_number: cp.oem || null, condition: 'Original',
+                quantity: 0, source: 'Original', is_historical: true
+            }).select().single();
+            if (pr.error) { skipped++; continue; }
+
+            var installRow = {
+                part_id: pr.data.id,
+                vehicle_id: vehicleId,
+                installed_date: dateInstalled,
+                installed_mileage: miles,
+                notes: notes,
+                is_historical: true,
+                is_original: true
+            };
+
+            // If there's a newer active install, mark this Original as removed on that install's date
+            if (activeMatch && activeMatch.installed_date && dateInstalled && activeMatch.installed_date > dateInstalled) {
+                installRow.removed_date = activeMatch.installed_date;
+                installRow.removal_reason = 'Replaced';
+                history++;
+            } else if (activeMatch) {
+                // Active install exists but no usable date comparison — add Original as removed immediately
+                installRow.removed_date = activeMatch.installed_date || new Date().toISOString().split('T')[0];
+                installRow.removal_reason = 'Replaced';
+                history++;
+            } else {
+                added++;
+            }
+
+            await db.from('part_installations').insert(installRow);
+        }
+
+        toast('🟣 Added ' + added + ' Original install' + (added !== 1 ? 's' : '') + (history > 0 ? ' (' + history + ' as history)' : ''), 'success');
+        invalidate();
+        closeModal();
+        setTimeout(async function () { if (_currentVehicleProfile.id) await refreshVehicleView(); }, 200);
+        return;
+    }
+
+    // ── SINGLE PART MODE ──────────────────────────────────────────────
     var catalogId = val('hi-part');
     if (!catalogId) return toast('Select a part', 'error');
     var partSel = document.getElementById('hi-part');
@@ -909,12 +1088,7 @@ async function saveHistoricalInstall(vehicleId) {
     var partName = partOpt.dataset.name || '';
     var oem = val('hi-oem');
     var cond = val('hi-cond') || 'New';
-    var miles = parseInt(document.getElementById('hi-miles').value) || null;
-    var noDate = document.getElementById('hi-no-date').checked;
-    var dateInstalled = noDate ? null : (val('hi-date') || null);
-    var notes = val('hi-notes') || null;
 
-    // Create a parts row with quantity 0 + is_historical=true so it doesn't pollute inventory
     var partRow = {
         name: partName,
         catalog_part_id: catalogId,
@@ -927,7 +1101,6 @@ async function saveHistoricalInstall(vehicleId) {
     var { data: newPart, error: partErr } = await db.from('parts').insert(partRow).select().single();
     if (partErr) { toast(partErr.message, 'error'); return; }
 
-    // Create install record linked to the historical part
     var installRow = {
         part_id: newPart.id,
         vehicle_id: vehicleId,
