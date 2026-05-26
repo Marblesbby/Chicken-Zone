@@ -20,8 +20,12 @@ async function renderVehicles() {
         if (!_session.vehicles) el.innerHTML = viewLoading('Loading vehicles...');
         [vehicles] = await Promise.all([getVehicles()]);
         // Fetch owner assignments
-        var opRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id', 'is', null);
+        var opRes = await db.from('profiles').select('id,username,display_name,avatar_emoji,user_color,assigned_vehicle_id').not('assigned_vehicle_id', 'is', null);
         ownerProfiles = opRes.data || [];
+        // Populate global cache so getVehicleDisplayName works everywhere
+        var ownerMap = {};
+        ownerProfiles.forEach(function (p) { if (p.assigned_vehicle_id) ownerMap[p.assigned_vehicle_id] = p; });
+        setVehicleOwnerCache(ownerMap);
         // Fetch install counts for scrap-vehicle remaining-parts %
         var scrapIds = vehicles.filter(function (v) { return v.is_scrap; }).map(function (v) { return v.id; });
         if (scrapIds.length > 0) {
@@ -181,21 +185,24 @@ async function renderVehicleProfile(arg) {
     const driverName = getVehicleDisplayName(v);
     const subtitle = [v.make, v.model, v.trim].filter(Boolean).join(' ').replace(/\s+AWD$/, '');
 
-    // Extract engine and transmission from notes
-    const engineMatch = (v.notes || '').match(/Engine:\s*([^.,\n]+)/i);
-    const transMatch = (v.notes || '').match(/Trans(?:mission)?:\s*([^.,\n]+)/i);
-    const interiorMatch = (v.notes || '').match(/([A-Za-z]+)\s+interior/i);
-    const engine = engineMatch ? engineMatch[1].trim() : '';
-    const transmission = transMatch ? transMatch[1].trim() : '';
-    const interiorColor = interiorMatch ? interiorMatch[1] : '';
+    // Prefer new direct columns; fall back to legacy notes parsing if empty
+    var legacyEngine = (v.notes || '').match(/Engine:\s*([^.,\n]+)/i);
+    var legacyTrans = (v.notes || '').match(/Trans(?:mission)?:\s*([^.,\n]+)/i);
+    var legacyInterior = (v.notes || '').match(/([A-Za-z]+)\s+interior/i);
+    const engine = v.engine || (legacyEngine ? legacyEngine[1].trim() : '');
+    const transmission = v.transmission || (legacyTrans ? legacyTrans[1].trim() : '');
+    const interiorColor = v.interior_color || (legacyInterior ? legacyInterior[1] : '');
     // Fetch assigned owner for this vehicle
     let vOwner = null;
     try {
         var ownerRes = await db.from('profiles').select('username,display_name,avatar_emoji,user_color').eq('assigned_vehicle_id', id).single();
         vOwner = ownerRes.data || null;
+        if (vOwner) _vehicleOwnerCache[id] = vOwner;
     } catch (e) { }
 
-    const tab = _currentVehicleProfile.tab || 'overview';
+    let tab = _currentVehicleProfile.tab || 'overview';
+    // Scrap vehicles don't have docs/reminders — bounce to overview
+    if (v.is_scrap && (tab === 'docs' || tab === 'reminders')) tab = 'overview';
 
     let html = '';
 
@@ -245,10 +252,12 @@ async function renderVehicleProfile(arg) {
         { id: 'overview', label: 'Overview' },
         { id: 'service', label: 'Service History (' + services.length + ')' },
         { id: 'parts', label: 'Installed Parts (' + installs.filter(function (i) { return !i.removed_date; }).length + ')' },
-        { id: 'photos', label: 'Photos' },
-        { id: 'docs', label: '📋 Docs' },
-        { id: 'reminders', label: 'Maintenance (' + reminders.length + ')' }
+        { id: 'photos', label: 'Photos' }
     ];
+    if (!isScrap) {
+        tabs.push({ id: 'docs', label: '📋 Docs' });
+        tabs.push({ id: 'reminders', label: 'Maintenance (' + reminders.length + ')' });
+    }
     tabs.forEach(function (t) {
         html += '<div class="tab ' + (tab === t.id ? 'active' : '') + '" onclick="setVehicleTab(\'' + t.id + '\')">' + t.label + '</div>';
     });
@@ -357,14 +366,13 @@ function renderVehicleOverview(v, engine, transmission, interiorColor, mileLogs,
     html += '<div class="stat-card"><div class="stat-label">Active Parts</div><div class="stat-value">' + active.length + '</div></div>';
     html += '</div>';
 
-    // Notes
+    // Notes — show as-is (engine, transmission, interior, driver are now separate columns)
     if (v.notes) {
-        // Filter out the structured fields from notes for display
+        // Legacy cleanup: hide structured prefixes from old data so it doesn't double up
         let cleanNotes = v.notes
             .replace(/Driver:\s*[^.,\n]+[.,]?\s*/i, '')
             .replace(/Engine:\s*[^.,\n]+[.,]?\s*/i, '')
             .replace(/Trans(?:mission)?:\s*[^.,\n]+[.,]?\s*/i, '')
-            .replace(/Automatic\s+climate\s+control[.,]?\s*/i, '')
             .replace(/[A-Za-z]+\s+interior[.,]?\s*/i, '')
             .trim();
         if (cleanNotes) {
@@ -800,10 +808,10 @@ async function saveVehicleDoc(vehicleId, docType, docId) {
 
 
 
-async function showVehicleModal(id = null, asScrap = false) { let v = null; if (id) { const { data } = await db.from('vehicles').select('*').eq('id', id).single(); v = data } var titleLabel = v ? 'Edit Vehicle' : (asScrap ? 'Add Scrap Vehicle' : 'Add Vehicle'); var btnLabel = v ? 'Save' : (asScrap ? 'Add to Junkyard' : 'Add Vehicle'); var scrapNotice = (!v && asScrap) ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;padding:10px;background:rgba(239,68,68,.07);border-left:3px solid var(--danger);border-radius:0 6px 6px 0;line-height:1.5">🪓 Adding a Scrap Vehicle — this will go directly to the Junkyard as a parts source. Mileage and VIN are optional.</div>' : ''; showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${titleLabel}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body">${scrapNotice}<div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year || ''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make || '')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model || '')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim || '')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color || '')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage || ''}"></div></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin || '')}"></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style === 'city' ? 'selected' : ''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style === 'mixed' ? 'selected' : ''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style === 'highway' ? 'selected' : ''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style === 'weekend' ? 'selected' : ''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style === 'worktruck' ? 'selected' : ''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Preferred Historical Date</label><input type="date" class="form-control" id="v-histdate" value="${v?.preferred_historical_date || ''}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used as default when adding historical part installs (parts installed before you started using Chicken Zone)</div></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes">${esc(v?.notes || '')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v ? `'${v.id}'` : 'null'}, ${asScrap ? 'true' : 'false'})">${btnLabel}</button></div></div></div>`); }
+async function showVehicleModal(id = null, asScrap = false) { let v = null; if (id) { const { data } = await db.from('vehicles').select('*').eq('id', id).single(); v = data } var titleLabel = v ? 'Edit Vehicle' : (asScrap ? 'Add Scrap Vehicle' : 'Add Vehicle'); var btnLabel = v ? 'Save' : (asScrap ? 'Add to Junkyard' : 'Add Vehicle'); var scrapNotice = (!v && asScrap) ? '<div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;padding:10px;background:rgba(239,68,68,.07);border-left:3px solid var(--danger);border-radius:0 6px 6px 0;line-height:1.5">🪓 Adding a Scrap Vehicle — this will go directly to the Junkyard as a parts source. Mileage and VIN are optional.</div>' : ''; showModal(`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">${titleLabel}</div><button class="close-btn" onclick="closeModal()">×</button></div><div class="modal-body">${scrapNotice}<div class="grid-3"><div class="form-group"><label>Year *</label><input type="number" class="form-control" id="v-year" value="${v?.year || ''}" placeholder="2006"></div><div class="form-group" style="grid-column:span 2"><label>Make *</label><input type="text" class="form-control" id="v-make" value="${esc(v?.make || '')}" placeholder="Cadillac, GMC, Chevrolet..."></div></div><div class="grid-2"><div class="form-group"><label>Model *</label><input type="text" class="form-control" id="v-model" value="${esc(v?.model || '')}" placeholder="Escalade, Yukon, Avalanche..."></div><div class="form-group"><label>Trim</label><input type="text" class="form-control" id="v-trim" value="${esc(v?.trim || '')}" placeholder="Denali, EXT, LTZ..."></div></div><div class="grid-2"><div class="form-group"><label>Exterior Color</label><input type="text" class="form-control" id="v-color" value="${esc(v?.color || '')}" placeholder="Black, Silver..."></div><div class="form-group"><label>Interior Color</label><input type="text" class="form-control" id="v-interior" value="${esc(v?.interior_color || '')}" placeholder="Black, Tan..."></div></div><div class="grid-2"><div class="form-group"><label>Engine</label><input type="text" class="form-control" id="v-engine" value="${esc(v?.engine || '')}" placeholder="6.0L V8, 5.3L V8..."></div><div class="form-group"><label>Transmission</label><input type="text" class="form-control" id="v-trans" value="${esc(v?.transmission || '')}" placeholder="4L60E, 4L80E..."></div></div><div class="grid-2"><div class="form-group"><label>Current Mileage</label><input type="number" class="form-control" id="v-miles" value="${v?.current_mileage || ''}"></div><div class="form-group"><label>VIN</label><input type="text" class="form-control" id="v-vin" value="${esc(v?.vin || '')}"></div></div><div class="form-group"><label>Commute Style</label><select class="form-control" id="v-commute"><option value="">Select driving pattern...</option><option value="city" ${v?.commute_style === 'city' ? 'selected' : ''}>City Driver ~8k mi/yr</option><option value="mixed" ${v?.commute_style === 'mixed' ? 'selected' : ''}>Mixed ~12k mi/yr</option><option value="highway" ${v?.commute_style === 'highway' ? 'selected' : ''}>Highway Commuter ~15k mi/yr</option><option value="weekend" ${v?.commute_style === 'weekend' ? 'selected' : ''}>Weekend Driver ~3k mi/yr</option><option value="worktruck" ${v?.commute_style === 'worktruck' ? 'selected' : ''}>Work Truck ~20k mi/yr</option></select></div><div class="form-group"><label>Preferred Historical Date</label><input type="date" class="form-control" id="v-histdate" value="${v?.preferred_historical_date || ''}"><div style="font-size:11px;color:var(--text-muted);margin-top:4px">Used as default when adding historical part installs (parts installed before you started using Chicken Zone)</div></div><div class="form-group"><label>Notes</label><textarea class="form-control" id="v-notes" placeholder="Free-form notes — the dedicated fields above are not needed here">${esc(v?.notes || '')}</textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveVehicle(${v ? `'${v.id}'` : 'null'}, ${asScrap ? 'true' : 'false'})">${btnLabel}</button></div></div></div>`); }
 
 async function saveVehicle(id, asScrap) {
-    const year = parseInt(document.getElementById('v-year').value); const make = val('v-make'), model = val('v-model'); if (!year || !make || !model) return toast('Year, make, and model are required', 'error'); const data = { year, make, model, trim: val('v-trim') || null, color: val('v-color') || null, current_mileage: parseInt(document.getElementById('v-miles').value) || 0, vin: val('v-vin') || null, notes: val('v-notes') || null, commute_style: val('v-commute') || null, preferred_historical_date: val('v-histdate') || null }; if (!id && asScrap) data.is_scrap = true; let error; if (id) { ({ error } = await db.from('vehicles').update(data).eq('id', id)) } else { data.created_by = currentUser.id; ({ error } = await db.from('vehicles').insert(data)) } if (error) { toast(error.message, 'error'); return } if (!id) {
+    const year = parseInt(document.getElementById('v-year').value); const make = val('v-make'), model = val('v-model'); if (!year || !make || !model) return toast('Year, make, and model are required', 'error'); const data = { year, make, model, trim: val('v-trim') || null, color: val('v-color') || null, interior_color: val('v-interior') || null, engine: val('v-engine') || null, transmission: val('v-trans') || null, current_mileage: parseInt(document.getElementById('v-miles').value) || 0, vin: val('v-vin') || null, notes: val('v-notes') || null, commute_style: val('v-commute') || null, preferred_historical_date: val('v-histdate') || null }; if (!id && asScrap) data.is_scrap = true; let error; if (id) { ({ error } = await db.from('vehicles').update(data).eq('id', id)) } else { data.created_by = currentUser.id; ({ error } = await db.from('vehicles').insert(data)) } if (error) { toast(error.message, 'error'); return } if (!id) {
         // Get the new vehicle ID
         var { data: newV } = await db.from('vehicles').select('id').order('created_at', { ascending: false }).limit(1).single();
         if (newV) {
@@ -1352,28 +1360,85 @@ async function showPartProfilePopup(catalogId) {
     showModal(html);
 }
 
+var _installedPartsFilter = 'real'; // 'real' | 'original' | 'all'
+var _installedPartsCollapsed = {}; // catName → bool
+
 function renderPartsTab(installs, vehicleId) {
     var active = (installs || []).filter(function (i) { return !i.removed_date; });
     var removed = (installs || []).filter(function (i) { return !!i.removed_date; });
-    var html = '<div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;align-items:center">';
-    html += '<input type="text" class="form-control" id="parts-tab-search" placeholder="&#x1F50D; Search installed parts..." style="flex:1;font-size:13px" oninput="filterInstalledParts(this.value)">';
+    var originalCount = active.filter(function (i) { return i.is_original; }).length;
+    var realCount = active.length - originalCount;
+    var html = '<div class="no-print" style="margin-bottom:14px;display:flex;flex-direction:column;gap:8px">';
+    html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+    html += '<input type="text" class="form-control" id="parts-tab-search" placeholder="&#x1F50D; Search installed parts..." style="flex:1;min-width:200px;font-size:13px" oninput="filterInstalledParts(this.value)">';
     html += '<button class="btn btn-primary btn-sm" onclick="showInstallPartModal(_currentVehicleProfile.id,null,null,null,null)">+ Log Install</button>';
     html += '<button class="btn btn-secondary btn-sm" onclick="showHistoricalInstallModal(_currentVehicleProfile.id)">+ History</button>';
     html += '</div>';
+    // Filter chips
+    html += '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">';
+    html += '<span style="font-size:11px;color:var(--text-muted);font-family:\'Barlow Condensed\',sans-serif;text-transform:uppercase;letter-spacing:1px;margin-right:4px">Show:</span>';
+    html += '<button class="sort-btn ' + (_installedPartsFilter === 'real' ? 'active' : '') + '" onclick="setInstalledFilter(\'real\')">Tracked (' + realCount + ')</button>';
+    html += '<button class="sort-btn ' + (_installedPartsFilter === 'original' ? 'active' : '') + '" onclick="setInstalledFilter(\'original\')">🟣 Original (' + originalCount + ')</button>';
+    html += '<button class="sort-btn ' + (_installedPartsFilter === 'all' ? 'active' : '') + '" onclick="setInstalledFilter(\'all\')">All (' + active.length + ')</button>';
+    html += '<button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:11px;padding:4px 8px" onclick="toggleAllCategories(false)" title="Collapse all categories">▶ Collapse all</button>';
+    html += '<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px" onclick="toggleAllCategories(true)" title="Expand all categories">▼ Expand all</button>';
+    html += '</div>';
+    html += '</div>';
     html += '<div id="parts-tab-list">';
-    html += renderPartsTabContent(active, removed);
+    // Cache full list and apply filter for initial render
+    _installedPartsCache = [].concat(active, removed);
+    var filteredActive = active;
+    if (_installedPartsFilter === 'real') filteredActive = active.filter(function (i) { return !i.is_original; });
+    else if (_installedPartsFilter === 'original') filteredActive = active.filter(function (i) { return i.is_original; });
+    html += renderPartsTabContent(filteredActive, removed);
     html += '</div>';
     return html;
+}
+
+function setInstalledFilter(f) {
+    _installedPartsFilter = f;
+    var search = document.getElementById('parts-tab-search');
+    filterInstalledParts(search ? search.value : '');
+    // Re-render the chips by re-rendering the whole tab
+    renderVehicleProfile({ id: _currentVehicleProfile.id });
+}
+
+function toggleAllCategories(expand) {
+    var cats = document.querySelectorAll('[data-cat-section]');
+    cats.forEach(function (c) {
+        var key = c.getAttribute('data-cat-section');
+        _installedPartsCollapsed[key] = !expand;
+        var body = c.querySelector('[data-cat-body]');
+        var arrow = c.querySelector('[data-cat-arrow]');
+        if (body) body.style.display = expand ? 'block' : 'none';
+        if (arrow) arrow.textContent = expand ? '▼' : '▶';
+    });
+}
+
+function toggleCategory(catKey) {
+    var sec = document.querySelector('[data-cat-section="' + catKey + '"]');
+    if (!sec) return;
+    var body = sec.querySelector('[data-cat-body]');
+    var arrow = sec.querySelector('[data-cat-arrow]');
+    var isHidden = body.style.display === 'none';
+    body.style.display = isHidden ? 'block' : 'none';
+    arrow.textContent = isHidden ? '▼' : '▶';
+    _installedPartsCollapsed[catKey] = !isHidden;
 }
 
 function filterInstalledParts(query) {
     var el = document.getElementById('parts-tab-list');
     if (!el) return;
-    // Re-render with filter
     var allInstalls = _installedPartsCache || [];
     var active = allInstalls.filter(function (i) { return !i.removed_date; });
     var removed = allInstalls.filter(function (i) { return !!i.removed_date; });
-    if (query.trim()) {
+    // Apply Tracked / Original / All filter
+    if (_installedPartsFilter === 'real') {
+        active = active.filter(function (i) { return !i.is_original; });
+    } else if (_installedPartsFilter === 'original') {
+        active = active.filter(function (i) { return i.is_original; });
+    }
+    if (query && query.trim()) {
         var q = query.toLowerCase();
         active = active.filter(function (i) { return i.parts && i.parts.name && i.parts.name.toLowerCase().includes(q); });
         removed = removed.filter(function (i) { return i.parts && i.parts.name && i.parts.name.toLowerCase().includes(q); });
@@ -1384,9 +1449,12 @@ function filterInstalledParts(query) {
 var _installedPartsCache = [];
 
 function renderPartsTabContent(active, removed) {
-    _installedPartsCache = [].concat(active, removed);
+    // Cache full list (unfiltered) the first time
+    if (!_installedPartsCache.length || _installedPartsCache.length < active.length + removed.length) {
+        _installedPartsCache = [].concat(active, removed);
+    }
     var html = '';
-    if (active.length === 0 && removed.length === 0) return '<div class="empty-state"><div class="empty-icon">&#x1F529;</div><p>No parts logged yet</p></div>';
+    if (active.length === 0 && removed.length === 0) return '<div class="empty-state"><div class="empty-icon">&#x1F529;</div><p>No parts match the current filter</p></div>';
 
     function safeId(k) { return (k || '').replace(/[^a-z0-9]/gi, '_'); }
 
@@ -1402,21 +1470,30 @@ function renderPartsTabContent(active, removed) {
             if (!groups[catName]) groups[catName] = [];
             groups[catName].push(i);
         });
-        // Sort categories alphabetically, put Other last
         var cats = Object.keys(groups).sort(function (a, b) {
             if (a === 'Other') return 1;
             if (b === 'Other') return -1;
             return a.localeCompare(b);
         });
         cats.forEach(function (cat) {
-            var icon = CAT_ICONS[cat] || '&#x1F527;';
-            html += '<div style="margin-bottom:16px">';
-            html += '<div style="font-family:Barlow Condensed,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)">' + icon + ' ' + esc(cat) + '</div>';
+            var catKey = safeId(cat);
+            var collapsed = !!_installedPartsCollapsed[catKey];
+            var icon = (typeof CAT_ICONS !== 'undefined' && CAT_ICONS[cat]) ? CAT_ICONS[cat] : '&#x1F527;';
+            html += '<div data-cat-section="' + catKey + '" style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;overflow:hidden">';
+            html += '<div data-cat-header onclick="toggleCategory(\'' + catKey + '\')" style="cursor:pointer;padding:10px 12px;background:var(--surface);display:flex;align-items:center;justify-content:space-between;font-family:Barlow Condensed,sans-serif;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted)">';
+            html += '<span>' + icon + ' ' + esc(cat) + ' <span style="color:var(--text-dim);font-weight:400">(' + groups[cat].length + ')</span></span>';
+            html += '<span data-cat-arrow style="color:var(--text-dim);font-size:11px">' + (collapsed ? '▶' : '▼') + '</span>';
+            html += '</div>';
+            html += '<div data-cat-body style="padding:8px 12px;display:' + (collapsed ? 'none' : 'block') + '">';
             groups[cat].forEach(function (i) {
                 var gid = 'grp_' + safeId(i.parts ? i.parts.name : 'unk') + '_' + i.id.substring(0, 8);
-                html += '<div class="install-row" style="cursor:pointer;margin-bottom:4px" onclick="toggleInstallHistory(\'' + gid + '\')">';
-                html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-                html += '<div style="display:flex;align-items:center;gap:8px"><strong style="font-size:13px">' + esc(i.parts ? i.parts.name : 'Unknown') + '</strong><span class="badge badge-ok" style="font-size:10px">Active</span></div>';
+                var isOrig = !!i.is_original;
+                html += '<div class="install-row" style="cursor:pointer;margin-bottom:4px' + (isOrig ? ';opacity:.75' : '') + '" onclick="toggleInstallHistory(\'' + gid + '\')">';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">';
+                html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><strong style="font-size:13px">' + esc(i.parts ? i.parts.name : 'Unknown') + '</strong>';
+                if (isOrig) html += '<span class="badge badge-original" style="font-size:10px">Original</span>';
+                else html += '<span class="badge badge-ok" style="font-size:10px">Active</span>';
+                html += '</div>';
                 html += '<span style="font-size:11px;color:var(--text-muted)">' + (i.installed_date ? fmtDate(i.installed_date) : '-') + ' &#x25BC;</span>';
                 html += '</div>';
                 html += '<div id="' + gid + '" style="display:none;margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px" onclick="event.stopPropagation()">';
@@ -1427,7 +1504,7 @@ function renderPartsTabContent(active, removed) {
                 if (!i.removed_date) html += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showRemovePartModal(\'' + i.id + '\')" >Mark Removed</button></div>';
                 html += '</div></div>';
             });
-            html += '</div>';
+            html += '</div></div>';
         });
     }
 
