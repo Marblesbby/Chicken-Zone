@@ -194,7 +194,7 @@ function renderPartsList(el){
               <td><strong>${esc(p.name)}</strong>${p.sub?`<span style="font-size:11px;color:var(--text-muted);margin-left:6px">${esc(p.sub)}</span>`:''}</td>
               <td><span style="font-size:12px;color:var(--text-muted)">${esc(p.cat)}</span></td>
               <td style="font-family:'Barlow Condensed',sans-serif;font-size:13px;color:var(--text-muted)">${esc(p.oem||'-')}</td>
-              <td>${cond?condBadge(cond):'<span style="color:var(--text-dim);font-size:12px">-</span>'}</td>
+              <td>${isZero ? condBadge('None') : (cond?condBadge(cond):'<span style="color:var(--text-dim);font-size:12px">-</span>')}</td>
               <td style="font-family:'Barlow Condensed',sans-serif;font-size:13px;color:${loc?'var(--text)':'var(--text-dim)'}">${esc(loc||'-')}</td>
               <td style="text-align:center;font-family:'Bebas Neue',sans-serif;font-size:20px;color:${failRank&&failRank<=10?'var(--danger)':failRank<=25?'var(--warning)':'var(--text-muted)'}">${failRank||'-'}</td>
               <td style="text-align:right;font-weight:700;font-size:16px;font-family:'Bebas Neue',sans-serif;color:${isZero?'var(--text-dim)':(topInv?.low_stock_threshold!==null&&topInv?.low_stock_threshold!==undefined&&qty<=topInv.low_stock_threshold)?'var(--danger)':'var(--accent)'}">${qty}</td>
