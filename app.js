@@ -48,6 +48,7 @@ var _session = {
     vehicles: null,   // vehicles table — loaded on first visit to vehicles/dashboard
     wishlist: null,   // wishlist table — loaded on first visit to wishlist
     reminders: null,   // maintenance_reminders — loaded on first visit to dashboard/vehicle
+    locations: null, // storage_locations table — loaded on first visit to storage/location modal
 };
 
 // ─── UI STATE ────────────────────────────────────────────────────────────────────────────────
@@ -410,6 +411,7 @@ function invalidate() {
     _session.vehicles = null;
     _session.wishlist = null;
     _session.reminders = null;
+    _session.locations = null;
     // Note: catalog is never invalidated — it only changes when you push a new deploy
 }
 function invalidateInventory() { _session.inventory = null; dbInventory = []; }
@@ -639,6 +641,10 @@ async function retryCurrentView() {
     if (view === 'wishlist') {
         invalidateWishlist();
     }
+    if (view === 'storage') {
+        invalidateLocations();
+        invalidateInventory();
+    }
     // Re-render current view
     var parsed = parseHash(window.location.hash);
     await showView(parsed.view || _currentView, parsed.arg);
@@ -680,6 +686,7 @@ async function showView(view, arg) {
         else if (view === 'vehicles') await renderVehicles();
         else if (view === 'vehicle-profile') await renderVehicleProfile(arg);
         else if (view === 'wishlist') await renderWishlist();
+        else if (view === 'storage') await renderStoragePage();
         else if (view === 'feedback') await renderFeedbackPage();
         else if (view === 'profile') await renderUserProfile();
         else if (view === 'users') _isAdmin ? await renderUsersPanel() : await renderUserProfile();
