@@ -550,11 +550,45 @@ function scanQRLoop(partId) {
 }
 
 async function saveLocation(partId, location) {
-    if (!location) return toast('Please enter a location', 'error');
-    const locs = getLocations(); if (!locs.includes(location)) { locs.push(location); saveLocations(locs) }
-    const { error } = await db.from('parts').update({ shelf_location: location, scanned_to_location_at: new Date().toISOString() }).eq('id', partId);
-    if (error) { toast(error.message, 'error'); return }
-    toast('Location saved!', 'success'); closeModal();
+    if (!location) return toast('Please select a location', 'error');
+
+    // If this location doesn't exist in storage_locations yet (e.g. from QR scan),
+    // auto-register it so the Storage view stays in sync
+    try {
+        var knownLocs = _session.locations || [];
+        var alreadyKnown = knownLocs.find(function(l) { return l.name === location; });
+        if (!alreadyKnown) {
+            var zones = ['WS', 'BR', 'GB', 'WB', 'CW', 'WR'];
+            var detectedZone = null;
+            zones.forEach(function(z) {
+                if (location.toUpperCase().startsWith(z + '-') || location.toUpperCase() === z) {
+                    detectedZone = z;
+                }
+            });
+            if (detectedZone) {
+                await db.from('storage_locations').insert({
+                    zone_code: detectedZone,
+                    name: location.toUpperCase(),
+                    display_order: 0,
+                    created_by: currentUser.id
+                });
+                invalidateLocations();
+            }
+        }
+    } catch (e) { /* non-fatal — location still saves to the part */ }
+
+    // Sync to localStorage
+    const locs = getLocations();
+    if (!locs.includes(location)) { locs.push(location); saveLocations(locs); }
+
+    // Save to the part record
+    const { error } = await db.from('parts').update({
+        shelf_location: location,
+        scanned_to_location_at: new Date().toISOString()
+    }).eq('id', partId);
+    if (error) { toast(error.message, 'error'); return; }
+    toast('Location saved!', 'success');
+    closeModal();
     invalidate();
     getInventory().then(inv => { dbInventory = inv; renderPartsList(); });
 }
